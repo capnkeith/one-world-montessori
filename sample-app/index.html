@@ -111,7 +111,10 @@
   </div>
 
   <script>
-    const BASE_URL = 'http://127.0.0.1:39390';
+    // Always talk back to whatever origin actually served this page — a
+    // hardcoded port here would silently point every request at a fixed
+    // port regardless of which instance the user is actually looking at.
+    const BASE_URL = window.location.origin;
     const statusEl = document.getElementById('status');
     const treePane = document.getElementById('tree-pane');
     const previewEl = document.getElementById('preview-pane');
