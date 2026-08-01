@@ -39,6 +39,11 @@ class Tool {
    * Invoke this tool. `ctx.trace` is the ordered list of {name, version}
    * calls that led here; this call appends itself before running, and
    * hands the extended trace to any nested calls made via ctx.call().
+   * `ctx.user` (normally set once by ToolSet.invoke, see ToolSet.js) is
+   * echoed back on every response — every call happens "in the context
+   * of" whichever real account is behind it, not just whichever process
+   * happens to be running, so a future multi-user server needs no change
+   * here, only a different way of populating ctx.user per request.
    */
   async invoke(params, ctx = {}) {
     const parentTrace = ctx.trace ?? [];
@@ -52,7 +57,7 @@ class Tool {
     };
 
     const result = await this._run(params, childCtx);
-    return { result, versionLineage: trace };
+    return { result, versionLineage: trace, user: ctx.user ?? null };
   }
 
   hasInternalTest() {

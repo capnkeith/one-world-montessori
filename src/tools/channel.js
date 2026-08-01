@@ -13,8 +13,8 @@ const { Tool } = require('../core/Tool');
 function createChannelTool({ channel, instanceId, displayName, toolSetRef = () => ({ list: () => [] }) }) {
   return new Tool({
     name: 'channel',
-    version: '1.1.0',
-    description: 'Peer rendezvous + messaging: announce presence (including this instance\'s own tool list), list online peers, send/receive arbitrary data.',
+    version: '1.2.0',
+    description: 'Peer rendezvous + messaging: announce presence (real Google name/photo when Drive is set up, plus this instance\'s own tool list), list online peers, send/receive arbitrary data.',
     mcpInputSchema: {
       action: z.enum(['announce', 'list', 'send', 'receive']).optional(),
       to: z.string().optional(),
@@ -23,18 +23,28 @@ function createChannelTool({ channel, instanceId, displayName, toolSetRef = () =
       sinceSeq: z.number().optional(),
     },
 
-    run: async (params) => {
+    // ctx.user is resolved once per ToolSet (see ToolSet.invoke /
+    // src/core/identity.js) — the real Google name/photo behind whichever
+    // account this instance is running as, falling back to the plain
+    // local displayName when ctx.user isn't populated (e.g. this tool's
+    // own internalTest calls run() directly via Tool.invoke, which never
+    // sets ctx.user itself — only ToolSet.invoke does).
+    run: async (params, ctx) => {
       const action = params?.action ?? 'list';
+      const user = ctx?.user ?? { displayName, photoLink: undefined };
       switch (action) {
         case 'announce': {
           const tools = toolSetRef().list().map((t) => t.name);
-          await channel.announce({ instanceId, displayName, tools });
-          return { announced: true, instanceId, displayName, tools };
+          await channel.announce({ instanceId, displayName: user.displayName, photoLink: user.photoLink, tools });
+          return { announced: true, instanceId, displayName: user.displayName, photoLink: user.photoLink, tools };
         }
 
         case 'list': {
           const tools = toolSetRef().list().map((t) => t.name);
-          return { self: { instanceId, displayName, tools }, peers: await channel.list() };
+          return {
+            self: { instanceId, displayName: user.displayName, photoLink: user.photoLink, tools },
+            peers: await channel.list(),
+          };
         }
 
         case 'send': {

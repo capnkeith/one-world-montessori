@@ -25,7 +25,7 @@ function buildToolSet({
   catalogEventLog,
   persistCatalogSnapshot,
 }) {
-  const toolSet = new ToolSet({ name: 'owm-tools', version: TOOLSET_VERSION });
+  const toolSet = new ToolSet({ name: 'owm-tools', version: TOOLSET_VERSION, instanceId, displayName, secretStore });
 
   // Assigned after creation below; doctor only reads it at invoke-time
   // (via the closure), by which point buildToolSet has finished.

@@ -145,7 +145,22 @@ function startServer({
 
 if (require.main === module) {
   const port = Number(process.env.OWM_HTTP_PORT) || HTTP_DEFAULT_PORT;
-  const server = startServer({ port });
+
+  // Testing aid only: OWM_CHANNEL_BACKEND=file shares presence/messages
+  // across separate local processes via one JSON file on disk, so
+  // multiple locally-launched instances can genuinely discover each other
+  // without provisioning real Google Sheets credentials for
+  // GoogleSheetsChannel (the actual cross-machine production backend).
+  // Unset by default — a real launch still gets the normal private,
+  // per-process InMemoryChannel.
+  let channel;
+  if (process.env.OWM_CHANNEL_BACKEND === 'file') {
+    const { FileChannel } = require('../core/FileChannel');
+    channel = new FileChannel();
+    console.log(`Using shared file channel for local peer testing: ${channel.filePath}`);
+  }
+
+  const server = startServer({ port, channel });
   server.on('listening', () => {
     console.log(`OWM local HTTP server listening on http://127.0.0.1:${port}`);
   });

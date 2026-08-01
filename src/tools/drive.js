@@ -150,6 +150,9 @@ function createFakeDriveClient() {
       },
       copy: async ({ fileId, requestBody }) => ({ data: { id: `${fileId}-copy`, name: requestBody.name } }),
     },
+    about: {
+      get: async () => ({ data: { user: { displayName: 'Fake User', photoLink: 'https://example.com/photo.jpg', emailAddress: 'fake@example.com' } } }),
+    },
   };
 }
 
@@ -207,6 +210,11 @@ async function driveInternalTest() {
   assert.strictEqual(renameResult.result.renamed, true);
   assert.strictEqual(fakeClient.updated.at(-1).requestBody.name, 'Renamed.docx');
 
+  const whoamiResult = await fakeTool.invoke({ action: 'whoami' });
+  assert.strictEqual(whoamiResult.result.displayName, 'Fake User');
+  assert.strictEqual(whoamiResult.result.photoLink, 'https://example.com/photo.jpg');
+  assert.strictEqual(whoamiResult.result.emailAddress, 'fake@example.com');
+
   const trashResult = await fakeTool.invoke({ action: 'trash', id: 'file-1' });
   assert.strictEqual(trashResult.result.trashed, true);
   assert.strictEqual(fakeClient.updated.at(-1).requestBody.trashed, true);
@@ -238,7 +246,7 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
     version: '2.1.0',
     description: 'Real Google Drive browsing and organizing for the account that authorized it.',
     mcpInputSchema: {
-      action: z.enum(['setup', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy']).optional(),
+      action: z.enum(['setup', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy', 'whoami']).optional(),
       clientJsonPath: z.string().optional(),
       folderId: z.string().optional(),
       query: z.string().optional(),
@@ -396,6 +404,12 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
         const current = profile.load().driveHiddenFolderIds;
         profile.update({ driveHiddenFolderIds: current.filter((id) => id !== params.folderId) });
         return { hidden: false, folderId: params.folderId };
+      }
+
+      if (action === 'whoami') {
+        const res = await cachedClient.about.get({ fields: 'user' });
+        const { displayName, photoLink, emailAddress } = res.data.user;
+        return { displayName, photoLink, emailAddress };
       }
 
       if (action === 'trash') {

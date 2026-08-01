@@ -70,3 +70,98 @@ test('ToolSet.runAllTests skips real-world tests unless explicitly requested', a
   const withRealWorld = await toolSet.runAllTests({ realWorld: true, testConfig: { label: 'fixture' } });
   assert.strictEqual(withRealWorld.a.real.passed, true);
 });
+
+test('ToolSet.invoke attaches ctx.user to every call, resolved once and cached', async () => {
+  let whoamiCalls = 0;
+  const secretStore = { has: (key) => key === 'google_oauth_refresh_token' };
+  const toolSet = new ToolSet({ name: 'ts', version: '1.0.0', instanceId: 'inst-1', displayName: 'Local Name', secretStore });
+
+  toolSet.register(
+    new Tool({
+      name: 'drive',
+      version: '1.0.0',
+      run: async (params) => {
+        if (params.action === 'whoami') {
+          whoamiCalls += 1;
+          return { displayName: 'Real Google Name', photoLink: 'https://example.com/p.jpg', emailAddress: 'real@example.com' };
+        }
+        throw new Error('unexpected action');
+      },
+    })
+  );
+  toolSet.register(
+    new Tool({
+      name: 'echoUser',
+      version: '1.0.0',
+      run: async (_params, ctx) => ctx.user,
+    })
+  );
+
+  const first = await toolSet.invoke('echoUser', {});
+  assert.deepStrictEqual(first.result, {
+    instanceId: 'inst-1',
+    displayName: 'Real Google Name',
+    photoLink: 'https://example.com/p.jpg',
+    emailAddress: 'real@example.com',
+  });
+
+  await toolSet.invoke('echoUser', {});
+  assert.strictEqual(whoamiCalls, 1, 'identity should be resolved once and cached, not re-fetched on every invoke');
+});
+
+test('ToolSet.invoke never calls the drive tool for identity when no refresh token exists (regression: this used to hang launching a real OAuth flow)', async () => {
+  let driveCalled = false;
+  const secretStore = { has: () => false };
+  const toolSet = new ToolSet({ name: 'ts', version: '1.0.0', instanceId: 'inst-2', displayName: 'Fallback Name', secretStore });
+
+  toolSet.register(
+    new Tool({
+      name: 'drive',
+      version: '1.0.0',
+      run: async () => {
+        driveCalled = true;
+        throw new Error('drive should never be called here');
+      },
+    })
+  );
+  toolSet.register(
+    new Tool({
+      name: 'echoUser',
+      version: '1.0.0',
+      run: async (_params, ctx) => ctx.user,
+    })
+  );
+
+  const { result } = await toolSet.invoke('echoUser', {});
+  assert.strictEqual(driveCalled, false);
+  assert.deepStrictEqual(result, { instanceId: 'inst-2', displayName: 'Fallback Name', photoLink: undefined, emailAddress: undefined });
+});
+
+test('ToolSet.invoke respects an explicitly-passed ctx.user without resolving identity at all', async () => {
+  let driveCalled = false;
+  const secretStore = { has: () => true };
+  const toolSet = new ToolSet({ name: 'ts', version: '1.0.0', instanceId: 'inst-3', displayName: 'X', secretStore });
+
+  toolSet.register(
+    new Tool({
+      name: 'drive',
+      version: '1.0.0',
+      run: async () => {
+        driveCalled = true;
+        return { displayName: 'Should Not Be Used' };
+      },
+    })
+  );
+  toolSet.register(
+    new Tool({
+      name: 'echoUser',
+      version: '1.0.0',
+      run: async (_params, ctx) => ctx.user,
+    })
+  );
+
+  const explicitUser = { instanceId: 'someone-else', displayName: 'Explicit User' };
+  const { result } = await toolSet.invoke('echoUser', {}, { user: explicitUser });
+  assert.deepStrictEqual(result, explicitUser);
+  assert.strictEqual(driveCalled, false);
+});
