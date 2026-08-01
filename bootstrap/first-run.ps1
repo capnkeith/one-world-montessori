@@ -52,22 +52,123 @@ function Wait-KeyOrTimeout($seconds, $message) {
   Write-Host ''
 }
 
+function Test-SmartAppControlBlocking {
+  # Smart App Control blocks unsigned scripts/executables outright, with
+  # no per-file "run anyway" override the way classic SmartScreen has -
+  # found for real when the downloaded installer silently failed to
+  # launch. If we don't handle this up front, nothing past this point
+  # ever runs at all.
+  try {
+    $state = (Get-MpComputerStatus -ErrorAction Stop).SmartAppControlState
+    return $state -eq 'On'
+  } catch {
+    return $false
+  }
+}
+
+function Resolve-SmartAppControlBlock {
+  Write-Host ''
+  Write-Host '=================================================='  -ForegroundColor Yellow
+  Write-Host '  A Windows security feature is blocking this install' -ForegroundColor Yellow
+  Write-Host '=================================================='  -ForegroundColor Yellow
+  Write-Host ''
+  Write-Host 'Unfortunately, Microsoft is blocking the install. Windows has a'
+  Write-Host 'feature called Smart App Control that blocks new, unrecognized'
+  Write-Host 'programs from running - including this installer.'
+  Write-Host ''
+  Write-Host 'We need to turn it off first to continue, which requires'
+  Write-Host 'restarting your computer. After that, setup will pick up right'
+  Write-Host 'where it left off automatically - you will not need to run'
+  Write-Host 'anything by hand again.'
+  Write-Host ''
+  Write-Host 'NOTE: this is the only way to install OWM Drive on this computer.' -ForegroundColor Yellow
+  Write-Host ''
+
+  $choice = ''
+  while ($choice -ne 'C' -and $choice -ne 'A') {
+    $choice = (Read-Host 'Type C to continue (restart required), or A to abort').Trim().ToUpperInvariant()
+  }
+
+  if ($choice -eq 'A') {
+    Write-Host ''
+    Write-Host 'Setup cancelled - nothing was changed on this computer.'
+    Wait-KeyOrTimeout 10 'Closing this window'
+    exit 0
+  }
+
+  Write-Host ''
+  Write-Host 'Turning off Smart App Control...'
+
+  # RunOnce continuation: fires once at next logon, then removes itself.
+  # This is what lets setup resume on its own after the restart, with no
+  # live process of ours needing to survive the reboot.
+  $continueCmd = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/capnkeith/one-world-montessori/main/bootstrap/first-run.ps1 | iex"'
+  New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Force -ErrorAction SilentlyContinue | Out-Null
+  Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'OWMDriveContinueSetup' -Value $continueCmd
+
+  # The actual toggle needs an admin token (HKLM write), so this one
+  # step runs in an elevated child process - the rest of setup never
+  # needs admin rights. Written to a temp .ps1 rather than passed as an
+  # inline -Command string, since multi-line scriptblocks don't survive
+  # ArgumentList's command-line reconstruction reliably.
+  $tempScript = Join-Path ([System.IO.Path]::GetTempPath()) ("owm-sac-disable-" + [System.Guid]::NewGuid().ToString('N') + '.ps1')
+  @'
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -Name "VerifiedAndReputablePolicyState" -Value 0
+& CiTool.exe -r
+'@ | Set-Content -Path $tempScript -Encoding UTF8
+
+  try {
+    $proc = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$tempScript`"")
+    if ($proc.ExitCode -ne 0) { throw "the change did not apply (exit code $($proc.ExitCode))" }
+  } catch {
+    Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+    Write-Host ''
+    Write-Host 'Could not turn off Smart App Control - the security prompt may have' -ForegroundColor Red
+    Write-Host 'been declined. Setup cannot continue until this is turned off.' -ForegroundColor Red
+    Write-Host 'This window will stay open - close it yourself when ready.' -ForegroundColor Yellow
+    try { [Console]::ReadKey($true) | Out-Null } catch { while ($true) { Start-Sleep -Seconds 3600 } }
+    exit 1
+  }
+  Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+
+  Write-Host ''
+  Write-Host '=================================================='
+  Write-Host '  Restarting your computer to finish this step'
+  Write-Host '=================================================='
+  Write-Host 'When you log back in, setup will continue automatically.'
+  Start-Sleep -Seconds 5
+  Restart-Computer -Force
+  exit 0
+}
+
 function Fail-Friendly($message, $logPath) {
   Write-Host ''
-  Write-Host 'Something went wrong and setup could not finish.' -ForegroundColor Red
+  Write-Host '=================================================='  -ForegroundColor Red
+  Write-Host '  Setup could not finish' -ForegroundColor Red
+  Write-Host '=================================================='  -ForegroundColor Red
   Write-Host $message -ForegroundColor Red
   if ($logPath) {
     Write-Host "Details were saved to: $logPath"
   }
   Write-Host ''
   Write-Host 'Please tell Seth what happened (a screenshot of this window helps).'
-  Wait-KeyOrTimeout 30 'Closing this window'
+  Write-Host 'This window will stay open - close it yourself when ready.' -ForegroundColor Yellow
+  # Deliberately no auto-close/timeout here (unlike the other prompts):
+  # a failure is exactly the moment someone needs time to actually read
+  # and report this, not have it vanish on its own.
+  try { [Console]::ReadKey($true) | Out-Null } catch { while ($true) { Start-Sleep -Seconds 3600 } }
   exit 1
 }
 
 Write-Host '=================================================='
 Write-Host '  OWM Drive - first-time setup'
 Write-Host '=================================================='
+
+if (Test-SmartAppControlBlocking) {
+  Resolve-SmartAppControlBlock
+  # Resolve-SmartAppControlBlock always exits (abort, failure, or reboot) - never returns.
+}
+
 Write-Host ''
 Write-Host 'This will install OWM Drive on this computer and keep it'
 Write-Host 'running in the background from now on.'
