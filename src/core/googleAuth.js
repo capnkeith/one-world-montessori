@@ -4,6 +4,7 @@ const http = require('node:http');
 const { URL } = require('node:url');
 const { exec } = require('node:child_process');
 const { google } = require('googleapis');
+const DEFAULT_CLIENT_JSON = require('./default-google-oauth-client.json');
 
 // Upgraded from drive.readonly to full drive access — createFolder/move
 // need write, and Drive has no narrower scope that covers "move any
@@ -23,15 +24,20 @@ const SCOPES = ['https://www.googleapis.com/auth/drive'];
  * First run opens a browser for one-time consent via a local loopback
  * redirect (a temporary HTTP server on an OS-assigned port); every run
  * after that reuses the stored refresh token silently.
+ *
+ * The client id/secret ship bundled in the repo (default-google-oauth-client.json)
+ * rather than requiring every install to run `drive setup` first — this is
+ * safe for an "installed application" OAuth client: Google's own threat
+ * model treats this secret as a public app identifier, not a confidential
+ * value, since a distributed native client can never actually keep it
+ * secret. Each user still does their own real consent and gets their own
+ * refresh token reflecting their own Drive permissions; `setup` remains
+ * available to override the bundled client if a different one is ever needed.
  */
 async function getDriveClient({ secretStore }) {
-  const clientJson = secretStore.get('google_oauth_client');
-  if (!clientJson) {
-    throw new Error(
-      'No Google OAuth client configured. Run: node src/cli.js call drive \'{"action":"setup","clientJsonPath":"<path to downloaded client_secret json>"}\''
-    );
-  }
-  const { client_id, client_secret } = JSON.parse(clientJson).installed;
+  const configuredClientJson = secretStore.get('google_oauth_client');
+  const clientJson = configuredClientJson ? JSON.parse(configuredClientJson) : DEFAULT_CLIENT_JSON;
+  const { client_id, client_secret } = clientJson.installed;
   const oauth2Client = new google.auth.OAuth2(client_id, client_secret);
 
   const refreshToken = secretStore.get('google_oauth_refresh_token');
