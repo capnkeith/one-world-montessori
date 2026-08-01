@@ -50,6 +50,12 @@ test('extracts text from a .docx buffer', async () => {
   assert.match(text, /Second paragraph/);
 });
 
+test('.docx paragraphs stay on separate lines instead of being mashed together', async () => {
+  const buffer = await buildDocxBuffer(['Hello world', 'Second paragraph']);
+  const text = await extractText({ buffer, mimeType: DOCX_MIME });
+  assert.deepStrictEqual(text.split('\n'), ['Hello world', 'Second paragraph']);
+});
+
 test('extracts text from a .pptx buffer, one slide at a time', async () => {
   const buffer = await buildPptxBuffer(['Slide one text', 'Slide two text']);
   const text = await extractText({ buffer, mimeType: PPTX_MIME });

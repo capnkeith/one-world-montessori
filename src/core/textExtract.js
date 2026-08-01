@@ -25,14 +25,23 @@ function decodeXmlEntities(text) {
     .replace(/&apos;/g, "'");
 }
 
-/** .docx: word/document.xml, text runs are <w:t>...</w:t>. */
+/**
+ * .docx: word/document.xml, text runs are <w:t>...</w:t>, grouped into
+ * paragraphs by <w:p>...</w:p>. Runs within a paragraph join directly
+ * (a run boundary isn't a word boundary), but paragraphs join with a
+ * newline each — joining every run in the whole document with '' instead
+ * mashes separate paragraphs into one unreadable line.
+ */
 async function extractDocx(buffer) {
   const zip = await JSZip.loadAsync(buffer);
   const doc = zip.file('word/document.xml');
   if (!doc) return null;
   const xml = await doc.async('string');
-  const runs = [...xml.matchAll(/<w:t[^>]*>(.*?)<\/w:t>/gs)].map((m) => decodeXmlEntities(m[1]));
-  return runs.join('').trim() || null;
+  const paragraphs = [...xml.matchAll(/<w:p\b[^>]*>(.*?)<\/w:p>/gs)].map((p) => {
+    const runs = [...p[1].matchAll(/<w:t[^>]*>(.*?)<\/w:t>/gs)].map((m) => decodeXmlEntities(m[1]));
+    return runs.join('');
+  });
+  return paragraphs.join('\n').trim() || null;
 }
 
 /** .pptx: one XML per slide under ppt/slides/, text runs are <a:t>...</a:t>. */

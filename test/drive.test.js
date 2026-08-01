@@ -110,6 +110,86 @@ test('getContent extracts real text from a .docx via the extraction pipeline, no
   assert.match(result.content, /Board minutes for June/);
 });
 
+test('getContent returns base64 image bytes for image files instead of treating them as not-extractable text', async () => {
+  const fakeBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]); // fake JPEG-ish bytes, never a real image
+  const mimeType = 'image/jpeg';
+
+  const fakeClient = {
+    files: {
+      get: async ({ fileId, alt }) => {
+        if (alt === 'media') return { data: fakeBytes };
+        return { data: { id: fileId, name: 'photo.jpg', mimeType } };
+      },
+    },
+  };
+  const tool = createDriveTool({ secretStore: fakeSecretStore(), profile: fakeProfile(), driveClientFactory: async () => fakeClient });
+
+  const { result } = await tool.invoke({ action: 'getContent', id: 'file-img' });
+  assert.strictEqual(result.mimeType, mimeType);
+  assert.strictEqual(result.content, undefined);
+  assert.strictEqual(result.imageBase64, fakeBytes.toString('base64'));
+});
+
+test('getRichContent renders a .docx into real HTML through the drive tool action', async () => {
+  const zip = new JSZip();
+  zip.file(
+    'word/document.xml',
+    '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>' +
+      '<w:p><w:r><w:t>Board minutes for June</w:t></w:r></w:p></w:body></w:document>'
+  );
+  zip.file(
+    '[Content_Types].xml',
+    '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+      '<Default Extension="xml" ContentType="application/xml"/>' +
+      '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
+      '</Types>'
+  );
+  zip.file(
+    '_rels/.rels',
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      '</Relationships>'
+  );
+  const docxBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+  const mimeType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+  const fakeClient = {
+    files: {
+      get: async ({ fileId, alt }) => {
+        if (alt === 'media') return { data: docxBuffer };
+        return { data: { id: fileId, name: 'minutes.docx', mimeType } };
+      },
+    },
+  };
+  const tool = createDriveTool({ secretStore: fakeSecretStore(), profile: fakeProfile(), driveClientFactory: async () => fakeClient });
+
+  const { result } = await tool.invoke({ action: 'getRichContent', id: 'file-x' });
+  assert.strictEqual(result.supported, true);
+  assert.strictEqual(result.type, 'html');
+  assert.match(result.html, /Board minutes for June/);
+});
+
+test('getRichContent reports unsupported: false for a mimeType with no rich renderer, without fetching file bytes', async () => {
+  let mediaFetched = false;
+  const mimeType = 'image/jpeg';
+  const fakeClient = {
+    files: {
+      get: async ({ fileId, alt }) => {
+        if (alt === 'media') {
+          mediaFetched = true;
+          return { data: Buffer.from('should not be reached') };
+        }
+        return { data: { id: fileId, name: 'photo.jpg', mimeType } };
+      },
+    },
+  };
+  const tool = createDriveTool({ secretStore: fakeSecretStore(), profile: fakeProfile(), driveClientFactory: async () => fakeClient });
+
+  const { result } = await tool.invoke({ action: 'getRichContent', id: 'file-img' });
+  assert.strictEqual(result.supported, false);
+  assert.strictEqual(mediaFetched, false);
+});
+
 test('copy recursively duplicates a folder tree, not just an empty shell', async () => {
   const tree = {
     'folder-A': { name: 'A', mimeType: 'application/vnd.google-apps.folder', parent: 'root' },
