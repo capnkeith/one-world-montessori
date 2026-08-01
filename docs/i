@@ -244,68 +244,20 @@ try {
   Write-Step 4 $totalSteps 'Setting up auto-start...'
   $nodePath = (Get-Command node).Source
   $serverScript = Join-Path $CurrentLink 'src\server\http-server.js'
-  $startupDir = [System.Environment]::GetFolderPath('Startup')
-  $startupVbsPath = Join-Path $startupDir 'OWM Drive.vbs'
-  $loopScriptPath = Join-Path $StateRoot 'auto-start-loop.bat'
-  $autoStartMethod = $null
-
-  # Preferred: Task Scheduler — gives us auto-restart-on-crash for free.
-  # Known to fail with a bare "Access is denied" on some real machines even
-  # for a simple per-user AtLogon task with -RunLevel Limited (reproduced
-  # live 2026-08-01 via both Register-ScheduledTask *and* schtasks.exe on
-  # an account that's a local admin, non-elevated session, no Group Policy
-  # or AV/EDR explaining it — root cause still unknown). Never let this be
-  # fatal to the whole install: steps 1-3 already succeeded, the app is
-  # installed and working, and only the "start automatically" convenience
-  # is at risk here.
-  try {
-    $action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$serverScript`"" -WorkingDirectory $CurrentLink
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
-    $settings = New-ScheduledTaskSettingsSet `
-      -RestartCount 999 `
-      -RestartInterval (New-TimeSpan -Minutes 1) `
-      -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
-      -AllowStartIfOnBatteries `
-      -DontStopIfGoingOnBatteries `
-      -StartWhenAvailable
-    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
-    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
-      -Description 'Keeps the OWM Drive local server running for this user.' -ErrorAction Stop | Out-Null
-    Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    Remove-Item -Path $startupVbsPath -ErrorAction SilentlyContinue # clean up a fallback from a prior install attempt
-    $autoStartMethod = 'Task Scheduler'
-  } catch {
-    # Fallback: a Startup-folder entry needs no special Windows permission
-    # at all (it's just a file write in the user's own profile), so it
-    # works even where Task Scheduler mysteriously refuses. The batch file
-    # loops forever, relaunching the server if it ever exits, to
-    # approximate Task Scheduler's RestartCount/RestartInterval behavior
-    # without needing Task Scheduler; wscript.exe runs it with a hidden
-    # window instead of a console flashing open at every login.
-    try {
-      Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue # clean up a partial attempt above
-      @"
-@echo off
-:loop
-"$nodePath" "$serverScript"
-timeout /t 5 /nobreak >nul
-goto loop
-"@ | Set-Content -Path $loopScriptPath -Encoding ASCII
-      $vbsLine = 'CreateObject("WScript.Shell").Run """' + $loopScriptPath + '""", 0, False'
-      Set-Content -Path $startupVbsPath -Value $vbsLine -Encoding ASCII
-      Start-Process -FilePath 'wscript.exe' -ArgumentList "`"$startupVbsPath`""
-      $autoStartMethod = 'Startup folder'
-    } catch {
-      $autoStartMethod = $null
-    }
-  }
-
-  if ($autoStartMethod) {
-    Write-Done "OWM Drive will now start automatically whenever you log in ($autoStartMethod)."
-  } else {
-    Write-Host '      Could not set up auto-start on this computer - you will need to launch OWM Drive yourself each time. Please tell Seth.' -ForegroundColor Yellow
-  }
+  $action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$serverScript`"" -WorkingDirectory $CurrentLink
+  $trigger = New-ScheduledTaskTrigger -AtLogOn
+  $settings = New-ScheduledTaskSettingsSet `
+    -RestartCount 999 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable
+  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+    -Description 'Keeps the OWM Drive local server running for this user.' | Out-Null
+  Start-ScheduledTask -TaskName $TaskName
+  Write-Done 'OWM Drive will now start automatically whenever you log in.'
 
   # --- Step 5: launch --------------------------------------------------------
   Write-Step 5 $totalSteps 'Launching OWM Drive...'

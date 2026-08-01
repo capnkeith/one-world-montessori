@@ -13,10 +13,15 @@
   h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
   p { color: #555; line-height: 1.5; }
   .status { font-size: 0.9rem; color: #888; margin-top: 1rem; min-height: 1.2em; }
-  .btn { display: inline-block; margin-top: 1.5rem; padding: 0.75rem 1.75rem; background: #2a5cdb; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 1.05rem; }
+  .btn { display: inline-block; margin-top: 1.5rem; padding: 0.75rem 1.75rem; background: #2a5cdb; color: #fff; text-decoration: none; border: none; border-radius: 8px; font-weight: 600; font-size: 1.05rem; cursor: pointer; font-family: inherit; }
   .btn:hover { background: #1e46ad; }
+  .btn.copied { background: #1e7b34; }
   .hidden { display: none; }
   .hint { font-size: 0.85rem; color: #888; margin-top: 0.75rem; }
+  .steps { text-align: left; margin-top: 1.25rem; padding: 1rem 1.25rem; background: #f5f7fb; border-radius: 10px; font-size: 0.9rem; }
+  .steps ol { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+  .steps li { margin-bottom: 0.5rem; }
+  code { background: #eef1f7; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
 </style>
 </head>
 <body>
@@ -26,17 +31,58 @@
       <h1>OWM Drive</h1>
       <p style="letter-spacing:0.06em; text-transform:uppercase; font-size:0.75rem; font-weight:700; color:#a12a2a; margin:0 0 0.5rem;">Internal Use Only</p>
       <p id="message">Checking whether OWM Drive is already running on this computer...</p>
-      <a id="install-btn" class="btn hidden" href="https://raw.githubusercontent.com/capnkeith/one-world-montessori/main/bootstrap/OWM-Drive-Install.bat" download="OWM-Drive-Install.bat">Install OWM Drive</a>
-      <p id="install-hint" class="hint hidden">Download the file, then double-click it. Your computer may show a security warning for the download — choose "Keep" / "Run anyway". Setup takes about a minute.</p>
+      <button id="install-btn" class="btn hidden" type="button">Copy install command</button>
+      <div id="install-steps" class="steps hidden">
+        <p class="hint" style="margin: 0 0 0.5rem;"><strong>First, make sure you pressed the "Copy install command" button above</strong> - you need to have copied it before the paste step below will work.</p>
+        <strong>A PowerShell window should open on its own.</strong> If it does, just press <code>Ctrl+V</code> then <strong>Enter</strong>.
+        <p class="hint" style="margin: 0.5rem 0 0.25rem;">If no window opens automatically after a few seconds, do this instead:</p>
+        <ol>
+          <li>Press the <strong>Windows key</strong>, type <code>PowerShell</code>, and press Enter.</li>
+          <li>Right-click inside the window that opens (or press <code>Ctrl+V</code>) to paste.</li>
+          <li>Press <strong>Enter</strong> to run it.</li>
+        </ol>
+        <p class="hint" style="margin-top:0.5rem;">You may see a security prompt partway through - that's expected, see the on-screen instructions. Setup takes about a minute.</p>
+      </div>
       <div class="status" id="status"></div>
     </div>
   </div>
   <script>
     const APP_URL = 'http://127.0.0.1:39390/';
+    // Shortest reliable form: hosted at a 1-letter path on this same Pages
+    // site (not raw.githubusercontent.com, which is ~40 chars longer) - kept
+    // in sync with bootstrap/first-run.ps1, see that file's own comment.
+    // -useb (-UseBasicParsing) is kept despite the length: dropping it risks
+    // Invoke-WebRequest trying to use the IE engine on a machine that has
+    // never run IE's first-launch wizard, a classic fresh-Windows failure.
+    const INSTALL_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/i | iex';
     const messageEl = document.getElementById('message');
     const statusEl = document.getElementById('status');
     const installBtn = document.getElementById('install-btn');
-    const installHint = document.getElementById('install-hint');
+    const installSteps = document.getElementById('install-steps');
+
+    installBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(INSTALL_COMMAND);
+      } catch (err) {
+        window.prompt('Copy this command:', INSTALL_COMMAND);
+      }
+      installBtn.textContent = 'Copied!';
+      installBtn.classList.add('copied');
+      setTimeout(() => {
+        installBtn.textContent = 'Copy install command';
+        installBtn.classList.remove('copied');
+      }, 2000);
+
+      // Best-effort only: opens a terminal automatically on machines where
+      // Windows Terminal's "wt://" URI handler is registered (common on a
+      // stock Windows 11 install via the Store). Silently does nothing on
+      // machines where it isn't registered - confirmed harmless via a
+      // direct test - which is exactly why the manual fallback steps are
+      // always shown regardless of whether this works.
+      try {
+        window.location.href = 'wt://';
+      } catch (err) { }
+    });
 
     async function probe() {
       try {
@@ -63,7 +109,7 @@
         messageEl.textContent = "OWM Drive isn't installed on this computer yet.";
         statusEl.textContent = '';
         installBtn.classList.remove('hidden');
-        installHint.classList.remove('hidden');
+        installSteps.classList.remove('hidden');
         return;
       }
       setTimeout(() => attempt(n + 1), 800);
