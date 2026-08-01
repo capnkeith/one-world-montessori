@@ -258,27 +258,39 @@ try {
   # boot-launcher.js checks for an update (main -> current) before starting
   # the server, so every login picks up the latest version without anyone
   # re-running this installer.
-  $serverScript = Join-Path $CurrentLink 'bootstrap\boot-launcher.js'
+  # Both auto-start paths below launch bootstrap/supervisor.js (never
+  # http-server.js/boot-launcher.js directly). supervisor.js owns retrying
+  # a crashing child itself, with exponential backoff and a hard give-up
+  # after repeated fast failures — see its header comment for why: a bare
+  # "relaunch every N seconds forever" (what both paths used to do) turned
+  # one fast-failing boot into dozens of relaunches per minute, which is
+  # exactly what happened live on 2026-08-01 when a wiped-clean credential
+  # store made every boot attempt a real (browser-opening) OAuth consent
+  # flow — the Startup-folder loop below relaunched it every 5 seconds
+  # with no circuit breaker until the browser itself fell over.
+  $supervisorScript = Join-Path $CurrentLink 'bootstrap\supervisor.js'
   $startupDir = [System.Environment]::GetFolderPath('Startup')
   $startupVbsPath = Join-Path $startupDir 'OWM Drive.vbs'
   $loopScriptPath = Join-Path $StateRoot 'auto-start-loop.bat'
   $autoStartMethod = $null
 
-  # Preferred: Task Scheduler — gives us auto-restart-on-crash for free.
-  # Known to fail with a bare "Access is denied" on some real machines even
-  # for a simple per-user AtLogon task with -RunLevel Limited (reproduced
-  # live 2026-08-01 via both Register-ScheduledTask *and* schtasks.exe on
-  # an account that's a local admin, non-elevated session, no Group Policy
-  # or AV/EDR explaining it — root cause still unknown). Never let this be
-  # fatal to the whole install: steps 1-3 already succeeded, the app is
-  # installed and working, and only the "start automatically" convenience
-  # is at risk here.
+  # Preferred: Task Scheduler. Known to fail with a bare "Access is denied"
+  # on some real machines even for a simple per-user AtLogon task with
+  # -RunLevel Limited (reproduced live 2026-08-01 via both
+  # Register-ScheduledTask *and* schtasks.exe on an account that's a local
+  # admin, non-elevated session, no Group Policy or AV/EDR explaining it —
+  # root cause still unknown). Never let this be fatal to the whole
+  # install: steps 1-3 already succeeded, the app is installed and
+  # working, and only the "start automatically" convenience is at risk
+  # here. RestartCount/RestartInterval here are just an outer backstop in
+  # case supervisor.js itself dies unexpectedly — its own internal loop
+  # already handles the common case of the server child crashing.
   try {
-    $action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$serverScript`"" -WorkingDirectory $CurrentLink
+    $action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$supervisorScript`"" -WorkingDirectory $CurrentLink
     $trigger = New-ScheduledTaskTrigger -AtLogOn
     $settings = New-ScheduledTaskSettingsSet `
-      -RestartCount 999 `
-      -RestartInterval (New-TimeSpan -Minutes 1) `
+      -RestartCount 3 `
+      -RestartInterval (New-TimeSpan -Minutes 5) `
       -ExecutionTimeLimit (New-TimeSpan -Seconds 0) `
       -AllowStartIfOnBatteries `
       -DontStopIfGoingOnBatteries `
@@ -293,19 +305,15 @@ try {
   } catch {
     # Fallback: a Startup-folder entry needs no special Windows permission
     # at all (it's just a file write in the user's own profile), so it
-    # works even where Task Scheduler mysteriously refuses. The batch file
-    # loops forever, relaunching the server if it ever exits, to
-    # approximate Task Scheduler's RestartCount/RestartInterval behavior
-    # without needing Task Scheduler; wscript.exe runs it with a hidden
-    # window instead of a console flashing open at every login.
+    # works even where Task Scheduler mysteriously refuses. wscript.exe
+    # runs supervisor.js with a hidden window instead of a console
+    # flashing open at every login; supervisor.js's own loop supplies the
+    # retry-with-backoff behavior Task Scheduler would otherwise give us.
     try {
       Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue # clean up a partial attempt above
       @"
 @echo off
-:loop
-"$nodePath" "$serverScript"
-timeout /t 5 /nobreak >nul
-goto loop
+"$nodePath" "$supervisorScript"
 "@ | Set-Content -Path $loopScriptPath -Encoding ASCII
       $vbsLine = 'CreateObject("WScript.Shell").Run """' + $loopScriptPath + '""", 0, False'
       Set-Content -Path $startupVbsPath -Value $vbsLine -Encoding ASCII
