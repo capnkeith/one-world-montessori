@@ -77,7 +77,11 @@ function runConsentFlow(oauth2Client) {
       const authUrl = oauth2Client.generateAuthUrl({
         access_type: 'offline',
         scope: SCOPES,
-        prompt: 'consent',
+        // select_account forces Google to show the account chooser even when
+        // the browser already has an active session for a different account —
+        // without it, consent silently proceeds as whichever account happens
+        // to already be signed in, with no chance to pick a different one.
+        prompt: 'select_account consent',
         redirect_uri: oauth2Client.redirectUri,
       });
       console.log(`Open this URL to sign in to Google Drive:\n${authUrl}`);
