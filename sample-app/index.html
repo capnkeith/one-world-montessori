@@ -389,11 +389,12 @@
     }
 
     // --- tree ---
-    // Interaction model matches a normal file browser: single click
-    // selects (updates preview/metadata/tags) without navigating; a
-    // folder's own arrow (or a double-click anywhere on the row) toggles
-    // expand/collapse; double-click on a file opens it for real; right
-    // click shows a context menu (Open / Copy Link / Copy Name).
+    // Drill-down file browser: the pane always shows exactly one "location"
+    // at a time (root peers, a folder's direct children, search results, or
+    // a Claude files-answer) — single click selects (updates
+    // preview/metadata/tags) without navigating; double-click on a folder
+    // navigates into it (a new history entry, see below); double-click on a
+    // file opens it for real; right click shows a context menu.
 
     function openEntry(entry) {
       if (entry.webViewLink) {
@@ -403,11 +404,10 @@
       }
     }
 
-    function makeRow(entry, depth) {
+    function makeRow(entry) {
       const row = document.createElement('div');
       row.className = 'tree-row';
       row.dataset.id = entry.id;
-      row.style.paddingLeft = `${depth * 16}px`;
 
       const arrow = document.createElement('span');
       arrow.className = 'tree-arrow';
@@ -421,99 +421,62 @@
       return { row, arrow, label };
     }
 
-    async function renderTreeNode(container, entry, depth) {
-      const { row, arrow } = makeRow(entry, depth);
-      container.appendChild(row);
-      row.addEventListener('click', () => selectEntry(entry));
-      row.addEventListener('contextmenu', (e) => showContextMenu(e, entry));
+    // Renders one flat list of entries into container (never nested — the
+    // current "location" is always exactly one level). Returns nothing;
+    // callers decide what emptyMessage/headerText fits their view type.
+    function renderEntryList(container, entries, { emptyMessage = '(empty)', headerText } = {}) {
+      container.innerHTML = '';
 
-      if (!entry.isFolder) {
-        row.addEventListener('dblclick', () => openEntry(entry));
+      if (headerText) {
+        const header = document.createElement('div');
+        header.className = 'muted';
+        header.style.marginBottom = '0.5rem';
+        header.textContent = headerText;
+        container.appendChild(header);
+      }
+
+      if (!entries || entries.length === 0) {
+        const empty = document.createElement('span');
+        empty.className = 'muted';
+        empty.textContent = emptyMessage;
+        container.appendChild(empty);
         return;
       }
 
-      let expanded = false;
-      let childContainer = null;
-
-      async function toggle() {
-        if (!childContainer) {
-          childContainer = document.createElement('div');
-          // Insert immediately after this row, not at the end of the
-          // shared container — otherwise every folder's children pile up
-          // at the bottom of the list instead of nesting under their own row.
-          row.insertAdjacentElement('afterend', childContainer);
-          try {
-            const body = await invoke('drive', { action: 'browse', folderId: entry.id });
-            if (body.result.entries.length === 0) {
-              const emptyRow = document.createElement('div');
-              emptyRow.className = 'muted';
-              emptyRow.style.paddingLeft = `${(depth + 1) * 16 + 4}px`;
-              emptyRow.textContent = '(empty folder)';
-              childContainer.appendChild(emptyRow);
-            } else {
-              for (const child of body.result.entries) {
-                await renderTreeNode(childContainer, child, depth + 1);
-              }
-            }
-          } catch (err) {
-            const errRow = document.createElement('div');
-            errRow.className = 'muted';
-            errRow.style.paddingLeft = `${(depth + 1) * 16 + 4}px`;
-            errRow.textContent = `could not load: ${err.message}`;
-            childContainer.appendChild(errRow);
+      for (const entry of entries) {
+        const { row } = makeRow(entry);
+        container.appendChild(row);
+        row.addEventListener('click', () => selectEntry(entry));
+        row.addEventListener('contextmenu', (e) => showContextMenu(e, entry));
+        row.addEventListener('dblclick', () => {
+          if (entry.isFolder) {
+            navigateTo({ type: 'folder', folderId: entry.id, name: entry.name });
+          } else {
+            openEntry(entry);
           }
-        }
-        expanded = !expanded;
-        childContainer.style.display = expanded ? 'block' : 'none';
-        arrow.textContent = expanded ? '▼' : '▶';
-      }
-
-      arrow.addEventListener('click', (e) => {
-        e.stopPropagation();
-        toggle();
-      });
-      row.addEventListener('dblclick', (e) => {
-        e.stopPropagation();
-        toggle();
-      });
-    }
-
-    async function loadRootTree() {
-      treePane.innerHTML = '<span class="muted">loading...</span>';
-      try {
-        const body = await invoke('drive', { action: 'browse' });
-        treePane.innerHTML = '';
-        for (const entry of body.result.entries) {
-          await renderTreeNode(treePane, entry, 0);
-        }
-      } catch (err) {
-        treePane.innerHTML = `<span class="muted">could not load Drive: ${err.message}. Has the drive tool been set up? See README.</span>`;
+        });
       }
     }
 
-    async function renderSearchResults(query) {
-      treePane.innerHTML = '<span class="muted">searching...</span>';
-      try {
-        const body = await invoke('drive', { action: 'search', query });
-        treePane.innerHTML = '';
-        if (!body.result.results.length) {
-          treePane.innerHTML = '<span class="muted">no matches</span>';
-        }
-        for (const entry of body.result.results) {
-          // Reuse renderTreeNode (not a flat makeRow) so folder results get
-          // the same working expand/collapse arrow as the root tree —
-          // previously search rows had an arrow that did nothing.
-          await renderTreeNode(treePane, entry, 0);
-        }
-      } catch (err) {
-        treePane.innerHTML = `<span class="muted">search failed: ${err.message}</span>`;
-      }
+    // Every folder's listing (root's synthetic peers included, under the
+    // '__home__' key) is cached by id the first time it's fetched, so
+    // revisiting anywhere already seen — via Back/Forward or re-navigating —
+    // is instant and never re-hits the drive tool.
+    const folderListCache = new Map();
+
+    async function fetchCachedEntries(cacheKey, params) {
+      if (folderListCache.has(cacheKey)) return folderListCache.get(cacheKey);
+      const body = await invoke('drive', { action: 'browse', ...params });
+      folderListCache.set(cacheKey, body.result.entries);
+      return body.result.entries;
     }
 
     // --- back/forward history: tracks the sequence of tree-pane "views"
-    // (root vs. a search query) the same way browser history tracks
-    // pages. navigateTo() is how a NEW view gets pushed (typing a search,
-    // clicking home); goBack()/goForward() replay an existing stack entry
+    // (root, a folder, a search query, or a Claude files-answer) the same
+    // way browser history tracks pages — drilling into a folder, typing a
+    // search, or getting a files answer from Claude are all just different
+    // ways to arrive at a new "location". navigateTo() is how a NEW view
+    // gets pushed; goBack()/goForward() replay an existing stack entry
     // without pushing a new one.
     const viewHistory = [];
     let viewHistoryIndex = -1;
@@ -521,15 +484,31 @@
     const forwardBtn = document.getElementById('forward-btn');
 
     function sameView(a, b) {
-      return a && b && a.type === b.type && a.query === b.query;
+      if (!a || !b || a.type !== b.type) return false;
+      if (a.type === 'search') return a.query === b.query;
+      if (a.type === 'folder') return a.folderId === b.folderId;
+      if (a.type === 'claude') return false; // each answer is its own distinct view, never de-duped
+      return true; // 'root'
     }
 
     async function renderView(view) {
       searchInput.value = view.type === 'search' ? view.query : '';
-      if (view.type === 'search') {
-        await renderSearchResults(view.query);
-      } else {
-        await loadRootTree();
+      treePane.innerHTML = '<span class="muted">loading...</span>';
+      try {
+        if (view.type === 'root') {
+          const entries = await fetchCachedEntries('__home__', {});
+          renderEntryList(treePane, entries, { emptyMessage: '(empty)' });
+        } else if (view.type === 'folder') {
+          const entries = await fetchCachedEntries(view.folderId, { folderId: view.folderId });
+          renderEntryList(treePane, entries, { emptyMessage: '(empty folder)' });
+        } else if (view.type === 'search') {
+          const body = await invoke('drive', { action: 'search', query: view.query });
+          renderEntryList(treePane, body.result.results, { emptyMessage: '(no matches)' });
+        } else if (view.type === 'claude') {
+          renderEntryList(treePane, view.files, { emptyMessage: '(no files)', headerText: view.summary });
+        }
+      } catch (err) {
+        treePane.innerHTML = `<span class="muted">could not load: ${err.message}</span>`;
       }
     }
 
@@ -622,39 +601,11 @@
       askBar.classList.toggle('disabled-bar', !available);
     }
 
-    // A files-type answer replaces the preview pane with a clickable list
-    // (same row styling/click behavior as the tree pane) instead of dumping
-    // JSON; clicking a row hands off to the normal selectEntry preview flow.
-    function renderClaudeFileList({ summary, files }) {
-      previewEl.innerHTML = '';
-
-      if (summary) {
-        const summaryEl = document.createElement('div');
-        summaryEl.style.marginBottom = '0.5rem';
-        summaryEl.textContent = summary;
-        previewEl.appendChild(summaryEl);
-      }
-
-      if (!files || files.length === 0) {
-        const empty = document.createElement('span');
-        empty.className = 'muted';
-        empty.textContent = '(no files)';
-        previewEl.appendChild(empty);
-        return;
-      }
-
-      for (const entry of files) {
-        const row = document.createElement('div');
-        row.className = 'tree-row';
-        const label = document.createElement('span');
-        label.className = 'tree-label';
-        label.textContent = (entry.isFolder ? '📁 ' : '📄 ') + entry.name;
-        row.appendChild(label);
-        row.addEventListener('click', () => selectEntry(entry));
-        previewEl.appendChild(row);
-      }
-    }
-
+    // A files-type answer becomes a real history entry, same as browsing or
+    // searching — so any folder Claude surfaces can be navigated into, and
+    // Back returns to whatever was showing before the question was asked.
+    // A text-type answer isn't a "location" at all, so it just replaces the
+    // preview pane directly, with no history entry.
     askInput.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter' || askInput.disabled) return;
       const query = askInput.value.trim();
@@ -663,7 +614,7 @@
       try {
         const body = await invoke('claude', { action: 'query', query });
         if (body.result.type === 'files') {
-          renderClaudeFileList(body.result);
+          await navigateTo({ type: 'claude', summary: body.result.summary, files: body.result.files });
         } else {
           previewEl.textContent = body.result.text ?? JSON.stringify(body.result, null, 2);
         }
