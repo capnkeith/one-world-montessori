@@ -255,7 +255,10 @@ try {
   # --- Step 4: keep it running automatically ------------------------------
   Write-Step 4 $totalSteps 'Setting up auto-start...'
   $nodePath = (Get-Command node).Source
-  $serverScript = Join-Path $CurrentLink 'src\server\http-server.js'
+  # boot-launcher.js checks for an update (main -> current) before starting
+  # the server, so every login picks up the latest version without anyone
+  # re-running this installer.
+  $serverScript = Join-Path $CurrentLink 'bootstrap\boot-launcher.js'
   $startupDir = [System.Environment]::GetFolderPath('Startup')
   $startupVbsPath = Join-Path $startupDir 'OWM Drive.vbs'
   $loopScriptPath = Join-Path $StateRoot 'auto-start-loop.bat'

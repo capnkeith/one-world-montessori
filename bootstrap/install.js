@@ -44,6 +44,7 @@ function runOrThrow(cmd, args, cwd) {
 function stageFromGit(source, ref, stagingDir) {
   log(`cloning ${source}#${ref} -> ${stagingDir}`);
   execFileSync('git', ['clone', '--branch', ref, '--depth', '1', source, stagingDir], { stdio: 'inherit' });
+  return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: stagingDir, encoding: 'utf8' }).trim();
 }
 
 function stageFromLocalCopy(source, stagingDir) {
@@ -75,11 +76,18 @@ function readStagedVersion(stagingDir) {
 }
 
 /** Promotes a validated staging dir to a versioned slot, then atomically repoints `current`. */
-function promote(stagingDir, versionLabel) {
+function promote(stagingDir, versionLabel, meta = {}) {
   fs.mkdirSync(paths.VERSIONS_DIR, { recursive: true });
   const versionDir = path.join(paths.VERSIONS_DIR, versionLabel);
   if (fs.existsSync(versionDir)) fs.rmSync(versionDir, { recursive: true, force: true });
   fs.renameSync(stagingDir, versionDir);
+
+  // Records which git commit is actually live, so check-for-update.js can
+  // tell whether `main` has moved on without re-cloning just to find out.
+  fs.writeFileSync(
+    path.join(versionDir, '.owm-install-meta.json'),
+    JSON.stringify({ commit: meta.commit ?? null, installedAt: new Date().toISOString() }),
+  );
 
   // Build the new link next to the old one, then swap — avoids ever
   // leaving `current` pointing at nothing partway through. Windows needs
@@ -108,8 +116,9 @@ function main() {
   const testPort = 39500 + Math.floor(Math.random() * 500);
 
   try {
+    let commit = null;
     if (isGitUrl(source)) {
-      stageFromGit(source, ref, stagingDir);
+      commit = stageFromGit(source, ref, stagingDir);
     } else {
       stageFromLocalCopy(source, stagingDir);
     }
@@ -122,7 +131,7 @@ function main() {
     }
 
     const versionLabel = `${readStagedVersion(stagingDir)}-${Date.now()}`;
-    promote(stagingDir, versionLabel);
+    promote(stagingDir, versionLabel, { commit });
     log('install/update succeeded.');
   } finally {
     if (fs.existsSync(stagingDir)) {
