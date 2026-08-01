@@ -1,0 +1,38 @@
+{
+  "name": "owm",
+  "version": "1.0.0",
+  "description": "One World Montessori: versioned MCP/CLI tools framework over Google Workspace.",
+  "main": "src/context.js",
+  "bin": {
+    "owm-cli": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "cli": "node src/cli.js",
+    "mcp": "node src/server/mcp-server.js",
+    "http": "node src/server/http-server.js",
+    "doctor": "node src/cli.js doctor"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/capnkeith/OWM.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/capnkeith/OWM/issues"
+  },
+  "homepage": "https://github.com/capnkeith/OWM#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "googleapis": "^173.0.0",
+    "jszip": "^3.10.1",
+    "pdf-parse": "^2.4.5",
+    "word-extractor": "^1.0.4",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-latest/xlsx-latest.tgz",
+    "zod": "^4.4.3"
+  }
+}
