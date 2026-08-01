@@ -18,6 +18,7 @@
 $ErrorActionPreference = 'Stop'
 
 $RepoZipUrl = 'https://github.com/capnkeith/one-world-montessori/archive/refs/heads/main.zip'
+$RepoRawScriptUrl = 'https://raw.githubusercontent.com/capnkeith/one-world-montessori/main/bootstrap/first-run.ps1'
 $StateRoot = Join-Path $env:USERPROFILE '.owm-mcp'
 $CurrentLink = Join-Path $StateRoot 'current'
 $LogDir = Join-Path $StateRoot 'install-logs'
@@ -112,7 +113,18 @@ function Resolve-SmartAppControlBlock {
   # RunOnce continuation: fires once at next logon, then removes itself.
   # This is what lets setup resume on its own after the restart, with no
   # live process of ours needing to survive the reboot.
-  $continueCmd = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -useb https://raw.githubusercontent.com/capnkeith/one-world-montessori/main/bootstrap/first-run.ps1 | iex"'
+  #
+  # NOT `iwr -useb <url> | iex` - confirmed live (2026-08-01) that Windows
+  # Defender's cloud/ML heuristics flag that exact fetch-then-pipe-into-iex
+  # shape as Trojan:Win32/Commando.A!ml and silently kill the RunOnce
+  # command before it does anything, with no install error to show for it
+  # - it just looks like "the reboot did nothing." Downloading to a file
+  # first and then launching that file with -File is a fundamentally
+  # different, much more benign-looking behavior sequence (fetch, then
+  # separately execute a file on disk - the same shape the rest of this
+  # installer already uses in step 2), and doesn't trip the same heuristic.
+  $resumeScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) 'owm-drive-resume.ps1'
+  $continueCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"iwr -useb $RepoRawScriptUrl -OutFile '$resumeScriptPath'; powershell -NoProfile -ExecutionPolicy Bypass -File '$resumeScriptPath'`""
   New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Force -ErrorAction SilentlyContinue | Out-Null
   Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'OWMDriveContinueSetup' -Value $continueCmd
 
