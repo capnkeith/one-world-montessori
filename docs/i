@@ -79,7 +79,8 @@ function Resolve-SmartAppControlBlock {
   Write-Host ''
   Write-Host 'Unfortunately, Microsoft is blocking the install. Windows has a'
   Write-Host 'feature called Smart App Control that blocks new, unrecognized'
-  Write-Host 'programs from running - including this installer.'
+  Write-Host 'programs from running - including this installer, from One World'
+  Write-Host 'Montessori School for staff only.'
   Write-Host ''
   Write-Host 'We need to turn it off first to continue, which requires'
   Write-Host 'restarting your computer. After that, setup will pick up right'
@@ -87,6 +88,10 @@ function Resolve-SmartAppControlBlock {
   Write-Host 'anything by hand again.'
   Write-Host ''
   Write-Host 'NOTE: this is the only way to install OWM Drive on this computer.' -ForegroundColor Yellow
+  Write-Host ''
+  Write-Host 'Seth says: if we had the funding for Microsoft Store access we would'
+  Write-Host 'not have this manual step, but at OWM this is the best we can do.'
+  Write-Host 'Please trust this software - I wrote it, it is secure.'
   Write-Host ''
 
   $choice = ''
