@@ -4,10 +4,26 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { createContext } = require('../context');
 const { HTTP_DEFAULT_PORT } = require('../core/paths');
 
 const SAMPLE_APP_PATH = path.join(__dirname, '..', '..', 'sample-app', 'index.html');
+const CHECK_FOR_UPDATE_PATH = path.join(__dirname, '..', '..', 'bootstrap', 'check-for-update.js');
+
+/**
+ * Real handler for an incoming 'update-now' admin command: runs the same
+ * checker a normal boot does (so it's a no-op if nothing's actually
+ * changed), then exits — the Task Scheduler/Startup-folder supervisor
+ * relaunches through boot-launcher.js, which resolves `current` fresh, so
+ * an update installed here takes effect immediately rather than waiting
+ * for the next reboot. Overridden in tests so a unit test never actually
+ * exits the test process or shells out to git.
+ */
+function defaultRunUpdateAndExit() {
+  spawnSync(process.execPath, [CHECK_FOR_UPDATE_PATH], { stdio: 'inherit' });
+  process.exit(0);
+}
 
 /**
  * Local HTTP front end for consumers that can't launch/pipe an MCP
@@ -28,8 +44,15 @@ function readBody(req) {
   });
 }
 
-function startServer({ port = HTTP_DEFAULT_PORT, stateRoot, announceIntervalMs = 30_000 } = {}) {
-  const { toolSet } = createContext({ stateRoot });
+function startServer({
+  port = HTTP_DEFAULT_PORT,
+  stateRoot,
+  channel,
+  announceIntervalMs = 30_000,
+  adminPollIntervalMs = 10_000,
+  runUpdateAndExit = defaultRunUpdateAndExit,
+} = {}) {
+  const { toolSet } = createContext({ stateRoot, channel });
 
   // Presence should reflect that this server process is alive, not
   // whether anyone has the sample app's browser tab open — announce
@@ -42,6 +65,28 @@ function startServer({ port = HTTP_DEFAULT_PORT, stateRoot, announceIntervalMs =
   };
   announce();
   const announceInterval = setInterval(announce, announceIntervalMs);
+
+  // Lets another peer trigger 'Update server now' from the sample app's
+  // peer-icon context menu (channel.send) instead of waiting for this
+  // instance's own next-boot check. sinceSeq is in-memory only — fine for
+  // a live-running process; nothing here needs to survive a restart since
+  // a restart is exactly what a successful update does anyway.
+  let adminSinceSeq = 0;
+  const pollAdminCommands = () => {
+    toolSet.invoke('channel', { action: 'receive', sinceSeq: adminSinceSeq }).then(({ result }) => {
+      for (const msg of result.messages) {
+        adminSinceSeq = Math.max(adminSinceSeq, msg.seq);
+        if (msg.type === 'admin-command' && msg.payload && msg.payload.command === 'update-now') {
+          console.log('[admin-command] update-now received — checking for updates...');
+          runUpdateAndExit();
+        }
+      }
+    }).catch((err) => {
+      console.error('admin-command poll failed:', err.message);
+    });
+  };
+  pollAdminCommands();
+  const adminPollInterval = setInterval(pollAdminCommands, adminPollIntervalMs);
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -90,7 +135,10 @@ function startServer({ port = HTTP_DEFAULT_PORT, stateRoot, announceIntervalMs =
     }
   });
 
-  server.on('close', () => clearInterval(announceInterval));
+  server.on('close', () => {
+    clearInterval(announceInterval);
+    clearInterval(adminPollInterval);
+  });
   server.listen(port, '127.0.0.1');
   return server;
 }

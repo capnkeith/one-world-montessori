@@ -5,7 +5,7 @@ const crypto = require('crypto');
 /**
  * Real cross-machine backend for the Channel interface (src/core/Channel.js),
  * using one shared Google Sheet as the rendezvous point: a `presence` tab
- * (instanceId, displayName, lastSeen) and a `messages` tab
+ * (instanceId, displayName, lastSeen, toolsJson) and a `messages` tab
  * (seq, id, from, to, type, payloadJson, sentAt).
  *
  * This is polling-based — "robust" here means at-least-once delivery via
@@ -32,7 +32,7 @@ class GoogleSheetsChannel {
   constructor({
     spreadsheetId,
     sheetsClient,
-    presenceRange = 'presence!A:C',
+    presenceRange = 'presence!A:D',
     messagesRange = 'messages!A:G',
   }) {
     if (!spreadsheetId) throw new Error('GoogleSheetsChannel requires spreadsheetId');
@@ -48,9 +48,10 @@ class GoogleSheetsChannel {
     return res.data.values ?? [];
   }
 
-  async announce({ instanceId, displayName }) {
+  async announce({ instanceId, displayName, tools = [] }) {
     const rows = await this._getValues(this.presenceRange);
     const nowIso = new Date().toISOString();
+    const toolsJson = JSON.stringify(tools);
     const idx = rows.findIndex((r) => r[0] === instanceId);
     const sheetName = this.presenceRange.split('!')[0];
 
@@ -59,15 +60,15 @@ class GoogleSheetsChannel {
         spreadsheetId: this.spreadsheetId,
         range: this.presenceRange,
         valueInputOption: 'RAW',
-        requestBody: { values: [[instanceId, displayName, nowIso]] },
+        requestBody: { values: [[instanceId, displayName, nowIso, toolsJson]] },
       });
     } else {
       const rowNumber = idx + 1;
       await this.sheets.spreadsheets.values.update({
         spreadsheetId: this.spreadsheetId,
-        range: `${sheetName}!A${rowNumber}:C${rowNumber}`,
+        range: `${sheetName}!A${rowNumber}:D${rowNumber}`,
         valueInputOption: 'RAW',
-        requestBody: { values: [[instanceId, displayName, nowIso]] },
+        requestBody: { values: [[instanceId, displayName, nowIso, toolsJson]] },
       });
     }
   }
@@ -76,7 +77,15 @@ class GoogleSheetsChannel {
     const rows = await this._getValues(this.presenceRange);
     const now = Date.now();
     return rows
-      .map(([instanceId, displayName, lastSeen]) => ({ instanceId, displayName, lastSeen }))
+      .map(([instanceId, displayName, lastSeen, toolsJson]) => {
+        let tools = [];
+        try {
+          tools = toolsJson ? JSON.parse(toolsJson) : [];
+        } catch {
+          tools = [];
+        }
+        return { instanceId, displayName, lastSeen, tools };
+      })
       .filter((p) => p.lastSeen && now - Date.parse(p.lastSeen) <= staleAfterMs);
   }
 

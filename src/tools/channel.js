@@ -10,11 +10,11 @@ const { Tool } = require('../core/Tool');
  * (src/core/Channel.js's InMemoryChannel by default; a real cross-machine
  * backend like GoogleSheetsChannel plugs into the same four methods).
  */
-function createChannelTool({ channel, instanceId, displayName }) {
+function createChannelTool({ channel, instanceId, displayName, toolSetRef = () => ({ list: () => [] }) }) {
   return new Tool({
     name: 'channel',
-    version: '1.0.0',
-    description: 'Peer rendezvous + messaging: announce presence, list online peers, send/receive arbitrary data.',
+    version: '1.1.0',
+    description: 'Peer rendezvous + messaging: announce presence (including this instance\'s own tool list), list online peers, send/receive arbitrary data.',
     mcpInputSchema: {
       action: z.enum(['announce', 'list', 'send', 'receive']).optional(),
       to: z.string().optional(),
@@ -26,12 +26,16 @@ function createChannelTool({ channel, instanceId, displayName }) {
     run: async (params) => {
       const action = params?.action ?? 'list';
       switch (action) {
-        case 'announce':
-          await channel.announce({ instanceId, displayName });
-          return { announced: true, instanceId, displayName };
+        case 'announce': {
+          const tools = toolSetRef().list().map((t) => t.name);
+          await channel.announce({ instanceId, displayName, tools });
+          return { announced: true, instanceId, displayName, tools };
+        }
 
-        case 'list':
-          return { self: { instanceId, displayName }, peers: await channel.list() };
+        case 'list': {
+          const tools = toolSetRef().list().map((t) => t.name);
+          return { self: { instanceId, displayName, tools }, peers: await channel.list() };
+        }
 
         case 'send': {
           const receipt = await channel.send({

@@ -13,6 +13,31 @@ function tempStateRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'owm-channel-test-'));
 }
 
+test('announce carries this instance\'s own tool names, visible to other peers via list', async () => {
+  const channel = new InMemoryChannel();
+  const alice = createChannelTool({
+    channel,
+    instanceId: 'alice',
+    displayName: 'Alice',
+    toolSetRef: () => ({ list: () => [{ name: 'drive' }, { name: 'channel' }] }),
+  });
+  const bob = createChannelTool({ channel, instanceId: 'bob', displayName: 'Bob' });
+
+  const announced = await alice.invoke({ action: 'announce' });
+  assert.deepStrictEqual(announced.result.tools, ['drive', 'channel']);
+
+  const { result } = await bob.invoke({ action: 'list' });
+  const aliceEntry = result.peers.find((p) => p.instanceId === 'alice');
+  assert.deepStrictEqual(aliceEntry.tools, ['drive', 'channel']);
+});
+
+test('a peer with no toolSetRef configured (the default) announces an empty tool list, not an error', async () => {
+  const channel = new InMemoryChannel();
+  const tool = createChannelTool({ channel, instanceId: 'x', displayName: 'X' });
+  const announced = await tool.invoke({ action: 'announce' });
+  assert.deepStrictEqual(announced.result.tools, []);
+});
+
 test('two peers sharing a channel discover each other after announcing', async () => {
   const channel = new InMemoryChannel();
   const alice = createChannelTool({ channel, instanceId: 'alice', displayName: 'Alice' });

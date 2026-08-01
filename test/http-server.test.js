@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { startServer } = require('../src/server/http-server');
+const { InMemoryChannel } = require('../src/core/Channel');
 
 function tempStateRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'owm-http-test-'));
@@ -75,6 +76,58 @@ test('POST /tools/:name/invoke for an unknown tool returns 500 with an error bod
     assert.strictEqual(res.status, 500);
     const body = await res.json();
     assert.match(body.error, /Unknown tool/);
+  } finally {
+    server.close();
+  }
+});
+
+test('an admin-command "update-now" message from another peer triggers the update-and-exit hook', async () => {
+  const sharedChannel = new InMemoryChannel();
+  let updateCalled = false;
+  const server = startServer({
+    port: 0,
+    stateRoot: tempStateRoot(),
+    channel: sharedChannel,
+    adminPollIntervalMs: 20,
+    runUpdateAndExit: () => {
+      updateCalled = true;
+    },
+  });
+  await listen(server);
+
+  try {
+    // Simulates another peer instance sending the command — 'broadcast'
+    // since the test doesn't know this server's auto-generated instanceId.
+    await sharedChannel.send({ from: 'other-peer', to: 'broadcast', type: 'admin-command', payload: { command: 'update-now' } });
+
+    const deadline = Date.now() + 2000;
+    while (!updateCalled && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.strictEqual(updateCalled, true);
+  } finally {
+    server.close();
+  }
+});
+
+test('an unrelated broadcast message never triggers the update-and-exit hook', async () => {
+  const sharedChannel = new InMemoryChannel();
+  let updateCalled = false;
+  const server = startServer({
+    port: 0,
+    stateRoot: tempStateRoot(),
+    channel: sharedChannel,
+    adminPollIntervalMs: 20,
+    runUpdateAndExit: () => {
+      updateCalled = true;
+    },
+  });
+  await listen(server);
+
+  try {
+    await sharedChannel.send({ from: 'other-peer', to: 'broadcast', type: 'greeting', payload: { hello: 'world' } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.strictEqual(updateCalled, false);
   } finally {
     server.close();
   }
