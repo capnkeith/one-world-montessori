@@ -89,6 +89,12 @@ function mapFile(f) {
 
 const LIST_FIELDS = 'nextPageToken, files(id, name, mimeType, size, md5Checksum, modifiedTime, webViewLink)';
 
+// The org's shared Drive tree — every install's home view opens here, not to
+// whichever account happens to be signed in. 'root' (Google's own alias for
+// "this account's personal My Drive") is kept as a distinct, explicit peer
+// entry alongside it, reachable by browsing folderId 'root'.
+const OWM_ROOT_FOLDER_ID = '14HsjBUU7L-2kk283-pg36r4NzyafdDDI';
+
 // Minimal in-memory Profile stand-in for tests — same load/update shape as
 // the real one, no disk involved.
 function fakeProfile(initial = {}) {
@@ -164,6 +170,13 @@ async function driveInternalTest() {
   assert.strictEqual(browsed.result.entries.find((e) => e.id === 'folder-1').isFolder, true);
   assert.strictEqual(browsed.result.entries.find((e) => e.id === 'file-1').isFolder, false);
   assert.strictEqual(browsed.result.entries.find((e) => e.id === 'file-1').webViewLink, 'https://drive.example/file-1');
+
+  // Home (no folderId) is a synthetic peer view — the shared OWM tree and
+  // this account's own My Drive — not a real Drive query.
+  const home = await fakeTool.invoke({ action: 'browse' });
+  assert.strictEqual(home.result.entries.length, 2);
+  assert.strictEqual(home.result.entries.find((e) => e.name === 'OWM').isFolder, true);
+  assert.strictEqual(home.result.entries.find((e) => e.name === 'My Drive').id, 'root');
 
   const content = await fakeTool.invoke({ action: 'getContent', id: 'file-1' });
   assert.strictEqual(content.result.content, 'exported doc text');
@@ -251,7 +264,16 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
       }
 
       if (action === 'browse') {
-        const folderId = params.folderId ?? 'root';
+        if (params.folderId == null) {
+          return {
+            folderId: null,
+            entries: [
+              { id: OWM_ROOT_FOLDER_ID, name: 'OWM', mimeType: 'application/vnd.google-apps.folder', isFolder: true },
+              { id: 'root', name: 'My Drive', mimeType: 'application/vnd.google-apps.folder', isFolder: true },
+            ],
+          };
+        }
+        const folderId = params.folderId;
         const hidden = new Set(profile.load().driveHiddenFolderIds);
         const files = await listAllPages(cachedClient, {
           q: `'${folderId}' in parents and trashed = false`,

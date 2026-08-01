@@ -478,7 +478,7 @@
     async function loadRootTree() {
       treePane.innerHTML = '<span class="muted">loading...</span>';
       try {
-        const body = await invoke('drive', { action: 'browse', folderId: 'root' });
+        const body = await invoke('drive', { action: 'browse' });
         treePane.innerHTML = '';
         for (const entry of body.result.entries) {
           await renderTreeNode(treePane, entry, 0);
