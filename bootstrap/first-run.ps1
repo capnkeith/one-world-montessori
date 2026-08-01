@@ -85,7 +85,7 @@ try {
     Fail-Friendly 'Could not download OWM Drive. Please check your internet connection and try again.' $null
   }
   Expand-Archive -Path $zipPath -DestinationPath $downloadDir -Force
-  $extracted = Get-ChildItem -Path $downloadDir -Directory | Where-Object { $_.Name -like 'OWM-*' } | Select-Object -First 1
+  $extracted = Get-ChildItem -Path $downloadDir -Directory | Where-Object { $_.Name -like 'one-world-montessori-*' } | Select-Object -First 1
   if (-not $extracted) {
     Fail-Friendly 'The downloaded OWM Drive package looked wrong.' $null
   }
@@ -95,8 +95,16 @@ try {
   Write-Step 3 $totalSteps 'Installing OWM Drive (this can take a minute or two)...'
   Write-Host '      You may see some technical text scroll by below - that is normal.'
   $installLog = Join-Path $LogDir 'install.log'
-  & node (Join-Path $extracted.FullName 'bootstrap\install.js') $extracted.FullName 2>&1 | Tee-Object -FilePath $installLog
-  if ($LASTEXITCODE -ne 0) {
+  # Deliberately NOT piped through Tee-Object/2>&1: install.js itself spawns
+  # npm as a child process with inherited stdio, and nesting that through a
+  # PowerShell pipe corrupts the exit code and truncates/garbles the log
+  # (found via a real end-to-end test run - it silently "failed" here even
+  # though the install genuinely succeeded when run without the pipe).
+  try { Start-Transcript -Path $installLog -Force | Out-Null } catch { }
+  & node (Join-Path $extracted.FullName 'bootstrap\install.js') $extracted.FullName
+  $installExitCode = $LASTEXITCODE
+  try { Stop-Transcript | Out-Null } catch { }
+  if ($installExitCode -ne 0) {
     Fail-Friendly 'OWM Drive failed its own self-check, so nothing was changed on this computer.' $installLog
   }
   Remove-Item -Recurse -Force $downloadDir -ErrorAction SilentlyContinue
