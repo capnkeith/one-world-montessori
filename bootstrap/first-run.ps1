@@ -32,6 +32,26 @@ function Refresh-Path {
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
+function Wait-KeyOrTimeout($seconds, $message) {
+  # A blocking Read-Host with no visual cue that it's *waiting* looks
+  # exactly like a frozen window to someone unused to console apps
+  # (found for real: a live test run "just stopped" here and looked
+  # broken). Auto-continues after a visible countdown either way, so
+  # nothing ever requires realizing you can press a key.
+  Write-Host ''
+  for ($i = $seconds; $i -gt 0; $i--) {
+    Write-Host "`r>>> $message (continuing automatically in $i... or press Enter now)     " -NoNewline -ForegroundColor Yellow
+    try {
+      if ([Console]::KeyAvailable) {
+        [Console]::ReadKey($true) | Out-Null
+        break
+      }
+    } catch { }
+    Start-Sleep -Milliseconds 1000
+  }
+  Write-Host ''
+}
+
 function Fail-Friendly($message, $logPath) {
   Write-Host ''
   Write-Host 'Something went wrong and setup could not finish.' -ForegroundColor Red
@@ -41,7 +61,7 @@ function Fail-Friendly($message, $logPath) {
   }
   Write-Host ''
   Write-Host 'Please tell Seth what happened (a screenshot of this window helps).'
-  Read-Host 'Press Enter to close this window'
+  Wait-KeyOrTimeout 30 'Closing this window'
   exit 1
 }
 
@@ -51,8 +71,7 @@ Write-Host '=================================================='
 Write-Host ''
 Write-Host 'This will install OWM Drive on this computer and keep it'
 Write-Host 'running in the background from now on.'
-Write-Host ''
-Read-Host 'Press Enter to install'
+Wait-KeyOrTimeout 10 'Starting install'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $totalSteps = 5
@@ -151,7 +170,7 @@ try {
   Write-Host '=================================================='
   Write-Host '  All done! OWM Drive is set up on this computer.'
   Write-Host '=================================================='
-  Read-Host 'Press Enter to close this window'
+  Wait-KeyOrTimeout 15 'Closing this window'
 } catch {
   Fail-Friendly $_.Exception.Message (Join-Path $LogDir 'install.log')
 }
