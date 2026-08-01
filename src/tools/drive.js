@@ -6,6 +6,7 @@ const { z } = require('zod');
 const { Tool } = require('../core/Tool');
 const { getDriveClient } = require('../core/googleAuth');
 const { extractText, supportsExtraction } = require('../core/textExtract');
+const { supportsRichPreview, renderRichPreview } = require('../core/richPreview');
 
 function isFolder(mimeType) {
   return mimeType === 'application/vnd.google-apps.folder';
@@ -224,7 +225,7 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
     version: '2.1.0',
     description: 'Real Google Drive browsing and organizing for the account that authorized it.',
     mcpInputSchema: {
-      action: z.enum(['setup', 'browse', 'search', 'getContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy']).optional(),
+      action: z.enum(['setup', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy']).optional(),
       clientJsonPath: z.string().optional(),
       folderId: z.string().optional(),
       query: z.string().optional(),
@@ -283,8 +284,15 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
         const { mimeType, name } = meta.data;
 
         const TEXT_MIME_TYPES = ['text/', 'application/json', 'application/xml', 'application/csv'];
+        const IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
         const isNativeGoogleType = mimeType.startsWith('application/vnd.google-apps.');
         const isPlainText = TEXT_MIME_TYPES.some((prefix) => mimeType.startsWith(prefix));
+        const isImage = IMAGE_MIME_TYPES.includes(mimeType);
+
+        if (isImage) {
+          const res = await cachedClient.files.get({ fileId: params.id, alt: 'media' }, { responseType: 'arraybuffer' });
+          return { id: params.id, name, mimeType, imageBase64: Buffer.from(res.data).toString('base64') };
+        }
 
         if (isNativeGoogleType) {
           const exportMimeType = mimeType === 'application/vnd.google-apps.spreadsheet' ? 'text/csv' : 'text/plain';
@@ -306,6 +314,25 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
         }
 
         return { id: params.id, name, mimeType, content: null, note: `Content type "${mimeType}" isn't text-extractable yet.` };
+      }
+
+      // Slower, full-fidelity rendering (docx->HTML via mammoth, PDF
+      // pages->PNG via pdfjs-dist) — a deliberately separate action from
+      // getContent so a caller can show the fast plain-text preview
+      // immediately and upgrade to this in the background. See
+      // src/core/richPreview.js and sample-app/index.html's preview loader.
+      if (action === 'getRichContent') {
+        if (!params.id) throw new Error('getRichContent requires id');
+        const meta = await cachedClient.files.get({ fileId: params.id, fields: 'id, name, mimeType' });
+        const { mimeType, name } = meta.data;
+
+        if (!supportsRichPreview(mimeType)) {
+          return { id: params.id, name, mimeType, supported: false };
+        }
+        const res = await cachedClient.files.get({ fileId: params.id, alt: 'media' }, { responseType: 'arraybuffer' });
+        const buffer = Buffer.from(res.data);
+        const rendered = await renderRichPreview(buffer, mimeType);
+        return { id: params.id, name, mimeType, supported: true, ...rendered };
       }
 
       if (action === 'createFolder') {
