@@ -44,6 +44,14 @@ async function getDriveClient({ secretStore }) {
   if (refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
   } else {
+    if (!process.stdout.isTTY) {
+      throw new Error(
+        'No cached Google credentials, and this process has no interactive terminal to open a consent ' +
+          "browser from — refusing to try (a background/service process silently popping browser windows " +
+          'is exactly what caused the 2026-08-01 incident). Run `node src/cli.js call drive \'{"action":"browse"}\'` ' +
+          'from a real terminal once to authorize this machine, then background processes will reuse the cached token.'
+      );
+    }
     const tokens = await runConsentFlow(oauth2Client);
     if (!tokens.refresh_token) {
       throw new Error('Google did not return a refresh token — revoke prior access at myaccount.google.com/permissions and try again (prompt=consent should prevent this, but Google only issues a refresh token on first-ever consent for a client).');

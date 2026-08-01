@@ -26,6 +26,14 @@ async function getDropboxClient({ secretStore }) {
 
   let refreshToken = secretStore.get('dropbox_refresh_token');
   if (!refreshToken) {
+    if (!process.stdout.isTTY) {
+      throw new Error(
+        'No cached Dropbox credentials, and this process has no interactive terminal to open a consent ' +
+          "browser from — refusing to try (a background/service process silently popping browser windows " +
+          'is exactly what caused the 2026-08-01 incident). Run `node src/cli.js call dropbox \'{"action":"browse"}\'` ' +
+          'from a real terminal once to authorize this machine, then background processes will reuse the cached token.'
+      );
+    }
     refreshToken = await runConsentFlow(appKey);
     secretStore.set('dropbox_refresh_token', refreshToken);
   }

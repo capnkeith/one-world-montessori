@@ -49,3 +49,14 @@ test('getDriveClient prefers an explicitly configured client over the bundled de
   // reaching into the googleapis internals for the id would be brittle;
   // the meaningful regression coverage is the "doesn't require setup" test above.
 });
+
+test('getDriveClient refuses to launch a real consent flow when there is no interactive terminal (regression: 2026-08-01 runaway-browser incident)', async () => {
+  const originalIsTTY = process.stdout.isTTY;
+  process.stdout.isTTY = false;
+  try {
+    const secretStore = fakeSecretStore(); // no cached refresh token at all
+    await assert.rejects(() => getDriveClient({ secretStore }), /no interactive terminal/);
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+  }
+});
