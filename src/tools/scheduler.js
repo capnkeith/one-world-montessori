@@ -18,7 +18,7 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
 
   return new Tool({
     name: 'scheduler',
-    version: '1.0.0',
+    version: '1.1.0',
     description: 'Generic calendar-based background job scheduling: add/list/get/cancel/run jobs, record feedback on a run.',
     mcpInputSchema: {
       action: z.enum(['addJob', 'listJobs', 'getJob', 'updateJob', 'cancelJob', 'runJob', 'runDueJobs', 'recordFeedback']).optional(),

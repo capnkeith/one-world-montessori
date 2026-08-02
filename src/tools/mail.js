@@ -107,7 +107,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
   return new Tool({
     name: 'mail',
-    version: '1.0.0',
+    version: '1.1.0',
     description: 'Real Gmail send/read for the account that authorized it — sending emails and checking for replies.',
     mcpInputSchema: {
       action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami']).optional(),

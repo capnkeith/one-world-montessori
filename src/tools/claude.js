@@ -382,7 +382,7 @@ function createClaudeTool({
 }) {
   return new Tool({
     name: 'claude',
-    version: '1.2.0',
+    version: '1.3.0',
     description:
       "Ask Claude a question; Claude can browse/search this account's Drive, list online peers, and (via interpretReply) act on email replies to scheduled jobs.",
     mcpInputSchema: {
