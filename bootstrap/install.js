@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { execFileSync, spawnSync } = require('child_process');
 const paths = require('../src/core/paths');
 
@@ -45,6 +46,41 @@ function stageFromGit(source, ref, stagingDir) {
   log(`cloning ${source}#${ref} -> ${stagingDir}`);
   execFileSync('git', ['clone', '--branch', ref, '--depth', '1', source, stagingDir], { stdio: 'inherit' });
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: stagingDir, encoding: 'utf8' }).trim();
+}
+
+// Pinned here — in the OLD, currently-installed copy of this file, not
+// something read from the newly-cloned candidate — deliberately, so a
+// malicious commit can never just ship a replacement trusted key alongside
+// itself and pass its own weakened check. Only this exact key is ever
+// trusted, regardless of what the candidate commit's own tree claims.
+const TRUSTED_SIGNER_PRINCIPAL = 'seth@oneworldmontessori.org';
+const TRUSTED_SIGNER_PUBLIC_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICCHUBSllAcHlsFch8cBLoMP7x4pK+y6iD+JOAO45+Ap';
+
+/**
+ * True iff stagingDir's HEAD commit carries a valid SSH signature from
+ * exactly the given principal+publicKey — factored out from
+ * verifyCommitSignature() below so it's unit-testable against arbitrary
+ * generated keys, not just whatever real key happens to be on this machine.
+ */
+function verifyCommitSignatureAgainst(stagingDir, { principal, publicKey }) {
+  const allowedSignersPath = path.join(os.tmpdir(), `owm-allowed-signers-${crypto.randomUUID()}.txt`);
+  fs.writeFileSync(allowedSignersPath, `${principal} ${publicKey}\n`);
+  try {
+    execFileSync('git', ['-c', `gpg.ssh.allowedSignersFile=${allowedSignersPath}`, 'verify-commit', 'HEAD'], {
+      cwd: stagingDir,
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(allowedSignersPath, { force: true });
+  }
+}
+
+/** True iff the staged git repo's HEAD commit carries a valid SSH signature from the one pinned trusted key. */
+function verifyCommitSignature(stagingDir) {
+  return verifyCommitSignatureAgainst(stagingDir, { principal: TRUSTED_SIGNER_PRINCIPAL, publicKey: TRUSTED_SIGNER_PUBLIC_KEY });
 }
 
 function stageFromLocalCopy(source, stagingDir) {
@@ -119,6 +155,16 @@ function main() {
     let commit = null;
     if (isGitUrl(source)) {
       commit = stageFromGit(source, ref, stagingDir);
+
+      // Checked before any dependency install or test run — an untrusted
+      // commit never even gets that far, let alone a chance to run its own
+      // (possibly tampered) code.
+      if (!verifyCommitSignature(stagingDir)) {
+        log(`commit ${commit} is not signed by the trusted key (${TRUSTED_SIGNER_PRINCIPAL}) — refusing to install. Live install (if any) left untouched.`);
+        process.exitCode = 1;
+        return;
+      }
+      log(`commit ${commit} signature verified.`);
     } else {
       stageFromLocalCopy(source, stagingDir);
     }
@@ -140,4 +186,8 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { verifyCommitSignatureAgainst, verifyCommitSignature, TRUSTED_SIGNER_PRINCIPAL, TRUSTED_SIGNER_PUBLIC_KEY };
