@@ -42,6 +42,30 @@ test('send-monthly-invoice-email generates a real PDF and sends it with an incre
   assert.strictEqual(pdfBytes.subarray(0, 5).toString('utf8'), '%PDF-');
 });
 
+test('always cc\'s Seth, merging with whatever cc list a job already has', async () => {
+  const sentParams = [];
+  const fakeMailTool = {
+    invoke: async (params) => {
+      sentParams.push(params);
+      return { result: { sent: true } };
+    },
+  };
+  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, invoiceCounter: fakeInvoiceCounter() });
+
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
+  assert.deepStrictEqual(sentParams[0].cc, ['seth@oneworldmontessori.org']);
+
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com', cc: 'rebecca@oneworldmontessori.org' });
+  assert.deepStrictEqual(sentParams[1].cc, ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org']);
+
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com', cc: ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org'] });
+  assert.deepStrictEqual(
+    sentParams[2].cc,
+    ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org'],
+    'must not duplicate Seth if he is already in the list'
+  );
+});
+
 test('each run gets the next invoice number, not a repeat', async () => {
   const fakeMailTool = { invoke: async () => ({ result: { sent: true } }) };
   const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, invoiceCounter: fakeInvoiceCounter() });

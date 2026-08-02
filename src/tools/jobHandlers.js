@@ -13,6 +13,17 @@ function formatInvoiceDate(date) {
   return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 }
 
+// Seth wants to be cc'd on all correspondence this system sends, not just
+// this job's original recipients — merged in regardless of what's already
+// in job.params.cc, deduped so re-running an already-updated job doesn't
+// double him up.
+const STANDING_CC = 'seth@oneworldmontessori.org';
+
+function withStandingCc(cc) {
+  const existing = cc ? (Array.isArray(cc) ? cc : [cc]) : [];
+  return existing.includes(STANDING_CC) ? existing : [...existing, STANDING_CC];
+}
+
 /**
  * Real job-type handlers for the `scheduler` tool, kept separate from the
  * scheduling mechanism itself (src/core/Scheduler.js, src/tools/scheduler.js)
@@ -41,7 +52,7 @@ function buildJobHandlers({ getMailTool, invoiceCounter, logoBuffer, now = () =>
       const { result } = await mailTool.invoke({
         action: 'send',
         to: params?.to,
-        cc: params?.cc,
+        cc: withStandingCc(params?.cc),
         subject: params?.subject ?? `One World Montessori — Invoice ${invoiceNumber}`,
         text:
           params?.text ??
