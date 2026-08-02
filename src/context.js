@@ -8,6 +8,7 @@ const { createSecretStore } = require('./core/SecretStore');
 const { SharedSecretStore, createGoogleSecretManagerClient } = require('./core/SharedSecretStore');
 const { Profile } = require('./core/Profile');
 const { InMemoryChannel } = require('./core/Channel');
+const { buildChannelFromSecretStore } = require('./core/googleSheetsAuth');
 const { InMemoryCatalogEventLog } = require('./core/CatalogEventLog');
 const { FileCatalog } = require('./core/FileCatalog');
 const { JobStore } = require('./core/JobStore');
@@ -36,9 +37,16 @@ const INVOICE_LOGO_PATH = path.join(__dirname, '..', 'assets', 'owm-logo.jpg');
  * FileCatalog snapshot, saved to disk after every mutation. That's
  * enough for a single-machine, single-active-writer setup; real
  * multi-machine sync is the deferred Firestore/Sheets backend work.
+ *
+ * `channel` left unset (the normal case for a real launch) resolves to a
+ * real GoogleSheetsChannel if this node's own `channel setup` action has
+ * stored a service-account key + spreadsheetId, otherwise the private,
+ * per-process InMemoryChannel — explicitly passing one (as every test
+ * does) always wins over both.
  */
-function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryChannel() } = {}) {
+function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
   const secretStore = createSecretStore(path.join(stateRoot, 'secrets'));
+  const resolvedChannel = channel ?? buildChannelFromSecretStore({ secretStore }) ?? new InMemoryChannel();
   const sharedSecretStore = new SharedSecretStore({
     secretStore,
     secretManagerClient: createGoogleSecretManagerClient({ secretStore }),
@@ -70,7 +78,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     secretStore,
     sharedSecretStore,
     profile,
-    channel,
+    channel: resolvedChannel,
     instanceId: profileData.instanceId,
     displayName: profileData.displayName,
     catalog,
@@ -81,7 +89,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     invoiceLogoBuffer,
   });
 
-  return { secretStore, sharedSecretStore, profile, toolSet, channel, catalog, jobStore, stateRoot, instanceId: profileData.instanceId };
+  return { secretStore, sharedSecretStore, profile, toolSet, channel: resolvedChannel, catalog, jobStore, stateRoot, instanceId: profileData.instanceId };
 }
 
 module.exports = { createContext };

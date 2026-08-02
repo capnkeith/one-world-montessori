@@ -56,7 +56,7 @@ function buildToolSet({
   });
   toolSet.register(echoTool);
 
-  channelTool = createChannelTool({ channel, instanceId, displayName, toolSetRef: () => toolSet });
+  channelTool = createChannelTool({ channel, instanceId, displayName, secretStore, toolSetRef: () => toolSet });
   toolSet.register(channelTool);
 
   const driveTool = createDriveTool({ secretStore, profile });

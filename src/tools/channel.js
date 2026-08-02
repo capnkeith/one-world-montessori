@@ -8,19 +8,22 @@ const { Tool } = require('../core/Tool');
  * Peer rendezvous + messaging, exposed identically across CLI/MCP/HTTP.
  * Backed by whatever Channel implementation the context wires in
  * (src/core/Channel.js's InMemoryChannel by default; a real cross-machine
- * backend like GoogleSheetsChannel plugs into the same four methods).
+ * backend like GoogleSheetsChannel plugs into the same four methods — see
+ * `setup` below for how a node opts into using one).
  */
-function createChannelTool({ channel, instanceId, displayName, toolSetRef = () => ({ list: () => [] }) }) {
+function createChannelTool({ channel, instanceId, displayName, secretStore, toolSetRef = () => ({ list: () => [] }) }) {
   return new Tool({
     name: 'channel',
-    version: '1.2.0',
+    version: '1.3.0',
     description: 'Peer rendezvous + messaging: announce presence (real Google name/photo when Drive is set up, plus this instance\'s own tool list), list online peers, send/receive arbitrary data.',
     mcpInputSchema: {
-      action: z.enum(['announce', 'list', 'send', 'receive']).optional(),
+      action: z.enum(['announce', 'list', 'send', 'receive', 'setup']).optional(),
       to: z.string().optional(),
       type: z.string().optional(),
       payload: z.any().optional(),
       sinceSeq: z.number().optional(),
+      serviceAccountKeyJson: z.string().optional(),
+      spreadsheetId: z.string().optional(),
     },
 
     // ctx.user is resolved once per ToolSet (see ToolSet.invoke /
@@ -33,6 +36,25 @@ function createChannelTool({ channel, instanceId, displayName, toolSetRef = () =
       const action = params?.action ?? 'list';
       const user = ctx?.user ?? { displayName, photoLink: undefined };
       switch (action) {
+        // Same shape as drive/dropbox's own `setup`: stores a credential
+        // this node needs in its own local SecretStore, encrypted at rest.
+        // Cross-machine presence only works once every node that should
+        // see each other has been given this same key + spreadsheetId —
+        // there's no automatic distribution (see GoogleSheetsChannel.js's
+        // header for why a raw service-account key is never bundled in
+        // the repo the way the Drive OAuth client is). A process needs
+        // restarting after this for it to take effect, since the channel
+        // backend is constructed once at startup (src/context.js), not
+        // re-checked on every call.
+        case 'setup': {
+          if (!params.serviceAccountKeyJson) throw new Error('setup requires serviceAccountKeyJson');
+          if (!params.spreadsheetId) throw new Error('setup requires spreadsheetId');
+          JSON.parse(params.serviceAccountKeyJson); // throws clearly here rather than failing obscurely later
+          secretStore.set('channel_service_account_key', params.serviceAccountKeyJson);
+          secretStore.set('channel_spreadsheet_id', params.spreadsheetId);
+          return { configured: true };
+        }
+
         case 'announce': {
           const tools = toolSetRef().list().map((t) => t.name);
           await channel.announce({ instanceId, displayName: user.displayName, photoLink: user.photoLink, tools });
@@ -75,6 +97,19 @@ function createChannelTool({ channel, instanceId, displayName, toolSetRef = () =
       const sent = await call({ action: 'send', payload: { hello: 'world' }, type: 'greeting' });
       assert.strictEqual(sent.result.sent, true);
       assert.ok(sent.result.seq >= 1);
+
+      const configured = await call({
+        action: 'setup',
+        serviceAccountKeyJson: JSON.stringify({ client_email: 'fake@example.iam.gserviceaccount.com', private_key: 'fake' }),
+        spreadsheetId: 'fake-sheet-id',
+      });
+      assert.strictEqual(configured.result.configured, true);
+      assert.ok(secretStore.has('channel_service_account_key'));
+      assert.ok(secretStore.has('channel_spreadsheet_id'));
+
+      await assert.rejects(() => call({ action: 'setup', spreadsheetId: 'x' }), /requires serviceAccountKeyJson/);
+      await assert.rejects(() => call({ action: 'setup', serviceAccountKeyJson: 'not json', spreadsheetId: 'x' }), SyntaxError);
+
       return { passed: true };
     },
 
