@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildMimeMessage } = require('../src/core/mime');
+const { buildMimeMessage, encodeHeaderValue } = require('../src/core/mime');
 
 test('a plain-text-only message has no multipart wrapper', () => {
   const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'hello there' });
@@ -63,6 +63,28 @@ test('cc accepts a single address or an array, joined with commas', () => {
 test('omitting cc leaves no Cc header at all', () => {
   const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'body' });
   assert.doesNotMatch(raw, /^Cc:/m);
+});
+
+test('encodeHeaderValue leaves pure-ASCII values untouched', () => {
+  assert.strictEqual(encodeHeaderValue('Monthly invoice'), 'Monthly invoice');
+});
+
+test('encodeHeaderValue RFC-2047-encodes a value containing non-ASCII bytes', () => {
+  const encoded = encodeHeaderValue('Thank you — and love the logo, Rebecca!');
+  assert.match(encoded, /^=\?UTF-8\?B\?.+\?=$/);
+  const decoded = Buffer.from(encoded.slice('=?UTF-8?B?'.length, -'?='.length), 'base64').toString('utf8');
+  assert.strictEqual(decoded, 'Thank you — and love the logo, Rebecca!');
+});
+
+test('a subject with an em dash is not sent as raw UTF-8 bytes in the header (regression: real mojibake sent 2026-08-01)', () => {
+  const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Thank you — and love the logo, Rebecca!', text: 'body' });
+  assert.doesNotMatch(raw, /^Subject: .*—/m, 'a raw em dash in the Subject header is exactly the bug this regresses');
+  assert.match(raw, /^Subject: =\?UTF-8\?B\?/m);
+});
+
+test('bodies declare Content-Transfer-Encoding: 8bit so UTF-8 body bytes are valid, not just headers', () => {
+  const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'em dash — here' });
+  assert.match(raw, /Content-Transfer-Encoding: 8bit/);
 });
 
 test('a custom boundary is used verbatim instead of a random one, for deterministic output', () => {

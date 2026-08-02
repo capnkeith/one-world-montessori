@@ -102,6 +102,53 @@ async function runClaudeQuery({ client, query, driveTool, channelTool, ctx }) {
   return finalAnswer ?? { type: 'text', text: '(Claude did not produce an answer)' };
 }
 
+/**
+ * Resolves a free-text reply to an automated task email (e.g. a reply to
+ * send-monthly-invoice-email) into a structured decision, forced through
+ * one tool call the same way runClaudeQuery forces respond_with_files/
+ * respond_with_text — this is what makes "type whatever you want in the
+ * reply" (Seth's design for the dispute-resolution loop) actually
+ * produce something the scheduler's recordFeedback can store.
+ */
+async function runInterpretReply({ client, replyText, context }) {
+  const { betaZodTool } = require('@anthropic-ai/sdk/helpers/beta/zod');
+
+  let resolution = null;
+
+  const recordResolution = betaZodTool({
+    name: 'record_resolution',
+    description: 'Record your resolution of this reply. Call exactly once, as your last action.',
+    inputSchema: z.object({
+      outcome: z.enum(['approved', 'disputed', 'unclear']),
+      note: z.string().describe('Brief explanation of your reasoning, referencing what the reply actually said'),
+    }),
+    run: async (input) => {
+      resolution = input;
+      return 'Recorded.';
+    },
+  });
+
+  const runner = client.beta.messages.toolRunner({
+    model: 'claude-opus-5',
+    max_tokens: 1024,
+    system:
+      'You are resolving a reply to an automated task email on behalf of One World Montessori. ' +
+      "You'll be given context about what was originally sent and the text of a reply that came back. " +
+      'Decide whether the reply approves the task, disputes/objects to it, or is unclear, and briefly ' +
+      'explain why using what the reply actually said. You MUST call record_resolution exactly once.',
+    tools: [recordResolution],
+    messages: [
+      {
+        role: 'user',
+        content: `Context about the original task:\n${JSON.stringify(context ?? {})}\n\nReply received:\n${replyText}`,
+      },
+    ],
+  });
+  await runner;
+
+  return resolution ?? { outcome: 'unclear', note: 'Claude did not produce a resolution.' };
+}
+
 // Minimal fakes for the internal test — never a real Tool instance, never a
 // real Anthropic client. A driveTool/channelTool stand-in only needs an
 // invoke() matching the { result, versionLineage } envelope Tool.invoke()
@@ -139,6 +186,12 @@ function fakeToolRunner(opts) {
   return (async () => {
     const query = opts.messages?.[0]?.content ?? '';
     const findTool = (name) => opts.tools.find((t) => t.name === name);
+    const recordResolution = findTool('record_resolution');
+    if (recordResolution) {
+      const outcome = /approve|looks correct|thank you/i.test(query) ? 'approved' : 'disputed';
+      await recordResolution.run({ outcome, note: 'Fake resolution based on reply text.' });
+      return;
+    }
     if (/folder|drive|file/i.test(query)) {
       await findTool('browse_drive').run({});
       await findTool('respond_with_files').run({
@@ -180,6 +233,14 @@ async function claudeInternalTest() {
   assert.strictEqual(textAnswer.result.type, 'text');
   assert.strictEqual(typeof textAnswer.result.text, 'string');
 
+  const resolution = await tool.invoke({
+    action: 'interpretReply',
+    replyText: 'Looks correct, approved.',
+    context: { jobLabel: 'Monthly invoice' },
+  });
+  assert.strictEqual(resolution.result.outcome, 'approved');
+  assert.strictEqual(typeof resolution.result.note, 'string');
+
   const unconfigured = createClaudeTool({
     secretStore: fakeSecretStore(),
     getDriveTool: () => driveTool,
@@ -197,12 +258,14 @@ async function claudeInternalTest() {
 function createClaudeTool({ secretStore, getDriveTool, getChannelTool, anthropicClientFactory = defaultAnthropicClientFactory }) {
   return new Tool({
     name: 'claude',
-    version: '1.0.0',
+    version: '1.1.0',
     description: "Ask Claude a question; Claude can browse/search this account's Drive and list online peers to answer.",
     mcpInputSchema: {
-      action: z.enum(['setup', 'query']).optional(),
+      action: z.enum(['setup', 'query', 'interpretReply']).optional(),
       apiKey: z.string().optional(),
       query: z.string().optional(),
+      replyText: z.string().optional(),
+      context: z.any().optional(),
     },
 
     run: async (params, ctx) => {
@@ -229,6 +292,15 @@ function createClaudeTool({ secretStore, getDriveTool, getChannelTool, anthropic
         });
       }
 
+      if (action === 'interpretReply') {
+        if (!params.replyText) throw new Error('interpretReply requires replyText');
+        if (!secretStore.has('anthropic_api_key')) {
+          throw new Error('Anthropic API key not configured — run `claude setup` first');
+        }
+        const client = anthropicClientFactory({ apiKey: secretStore.get('anthropic_api_key') });
+        return runInterpretReply({ client, replyText: params.replyText, context: params.context });
+      }
+
       throw new Error(`Unknown claude action: ${action}`);
     },
 
@@ -245,4 +317,4 @@ function createClaudeTool({ secretStore, getDriveTool, getChannelTool, anthropic
   });
 }
 
-module.exports = { createClaudeTool, runClaudeQuery };
+module.exports = { createClaudeTool, runClaudeQuery, runInterpretReply };

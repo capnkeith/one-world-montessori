@@ -1,6 +1,19 @@
 'use strict';
 
 /**
+ * RFC 2047 encoded-word for a header value containing non-ASCII bytes
+ * (e.g. an em dash in a subject line) — a raw UTF-8 byte in a header
+ * isn't valid RFC 2822, and mail systems that re-decode it under a
+ * different assumed charset produce exactly the "Ã¢Â€Â”" mojibake seen
+ * in a real sent email before this fix. Pure-ASCII values pass through
+ * unchanged.
+ */
+function encodeHeaderValue(value) {
+  if (/^[\x00-\x7F]*$/.test(value)) return value;
+  return `=?UTF-8?B?${Buffer.from(value, 'utf8').toString('base64')}?=`;
+}
+
+/**
  * Builds a raw RFC 2822 message for Gmail API's users.messages.send
  * `raw` field (base64url-encoded by the caller). Supports plain text
  * and/or HTML bodies plus optional attachments — no external MIME
@@ -10,14 +23,17 @@
 function buildMimeMessage({ to, cc, subject, text, html, attachments = [], boundary = defaultBoundary() }) {
   const lines = [`To: ${to}`];
   if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
-  lines.push(`Subject: ${subject}`, 'MIME-Version: 1.0');
+  lines.push(`Subject: ${encodeHeaderValue(subject)}`, 'MIME-Version: 1.0');
   const hasAttachments = attachments.length > 0;
   const hasBothBodies = Boolean(text) && Boolean(html);
 
   if (!hasAttachments && !hasBothBodies) {
-    lines.push(html ? 'Content-Type: text/html; charset="UTF-8"' : 'Content-Type: text/plain; charset="UTF-8"');
-    lines.push('');
-    lines.push(html ?? text ?? '');
+    lines.push(
+      html ? 'Content-Type: text/html; charset="UTF-8"' : 'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      html ?? text ?? ''
+    );
     return lines.join('\r\n');
   }
 
@@ -30,16 +46,23 @@ function buildMimeMessage({ to, cc, subject, text, html, attachments = [], bound
       '',
       `--${altBoundary}`,
       'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 8bit',
       '',
       text,
       `--${altBoundary}`,
       'Content-Type: text/html; charset="UTF-8"',
+      'Content-Transfer-Encoding: 8bit',
       '',
       html,
       `--${altBoundary}--`
     );
   } else {
-    lines.push(html ? 'Content-Type: text/html; charset="UTF-8"' : 'Content-Type: text/plain; charset="UTF-8"', '', html ?? text ?? '');
+    lines.push(
+      html ? 'Content-Type: text/html; charset="UTF-8"' : 'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: 8bit',
+      '',
+      html ?? text ?? ''
+    );
   }
 
   for (const att of attachments) {
@@ -61,4 +84,4 @@ function defaultBoundary() {
   return `owm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-module.exports = { buildMimeMessage };
+module.exports = { buildMimeMessage, encodeHeaderValue };

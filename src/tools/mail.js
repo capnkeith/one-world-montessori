@@ -30,7 +30,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
     version: '1.0.0',
     description: 'Real Gmail send/read for the account that authorized it — sending emails and checking for replies.',
     mcpInputSchema: {
-      action: z.enum(['send', 'listMessages', 'getMessage']).optional(),
+      action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami']).optional(),
       to: z.string().optional(),
       cc: z.union([z.string(), z.array(z.string())]).optional(),
       subject: z.string().optional(),
@@ -86,6 +86,17 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         return { message: extractMessage(res.data) };
       }
 
+      if (action === 'getThread') {
+        if (!params.id) throw new Error('getThread requires id');
+        const res = await cachedClient.users.threads.get({ userId: 'me', id: params.id, format: 'full' });
+        return { threadId: res.data.id, messages: (res.data.messages ?? []).map(extractMessage) };
+      }
+
+      if (action === 'whoami') {
+        const res = await cachedClient.users.getProfile({ userId: 'me' });
+        return { emailAddress: res.data.emailAddress };
+      }
+
       throw new Error(`Unknown mail action: ${action}`);
     },
 
@@ -118,6 +129,10 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
             list: async () => ({ data: { messages: [{ id: 'msg-1', threadId: 'thread-1' }] } }),
             get: async ({ id }) => ({ data: fakeMessages[id] }),
           },
+          threads: {
+            get: async ({ id }) => ({ data: { id, messages: [fakeMessages['msg-1']] } }),
+          },
+          getProfile: async () => ({ data: { emailAddress: 'claude@oneworldmontessori.org' } }),
         },
       };
       const fakeTool = createMailTool({
@@ -158,6 +173,13 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       const fetched = await fakeTool.invoke({ action: 'getMessage', id: 'msg-1' });
       assert.strictEqual(fetched.result.message.from, 'businessmanager@oneworldmontessori.org');
       assert.match(fetched.result.message.body, /approved/);
+
+      const thread = await fakeTool.invoke({ action: 'getThread', id: 'thread-1' });
+      assert.strictEqual(thread.result.messages.length, 1);
+      assert.strictEqual(thread.result.messages[0].from, 'businessmanager@oneworldmontessori.org');
+
+      const who = await fakeTool.invoke({ action: 'whoami' });
+      assert.strictEqual(who.result.emailAddress, 'claude@oneworldmontessori.org');
 
       return { passed: true };
     },
