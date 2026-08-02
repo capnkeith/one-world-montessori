@@ -414,9 +414,9 @@
     // Drill-down file browser: the pane always shows exactly one "location"
     // at a time (root peers, a folder's direct children, search results, or
     // a Claude files-answer) — single click selects (updates
-    // preview/metadata/tags) without navigating; double-click on a folder
-    // navigates into it (a new history entry, see below); double-click on a
-    // file opens it for real; right click shows a context menu.
+    // preview/metadata/tags) and, for a folder, also navigates straight into
+    // it (a new history entry, see below); double-click always opens the
+    // item externally via its real webViewLink; right click shows a context menu.
 
     function openEntry(entry) {
       if (entry.webViewLink) {
@@ -468,15 +468,18 @@
       for (const entry of entries) {
         const { row } = makeRow(entry);
         container.appendChild(row);
-        row.addEventListener('click', () => selectEntry(entry));
         row.addEventListener('contextmenu', (e) => showContextMenu(e, entry));
-        row.addEventListener('dblclick', () => {
+        // Single click always selects (updates preview/metadata/tags) and,
+        // for a folder, also navigates straight into it — no separate
+        // double-click needed to drill down. Double-click always opens the
+        // real item externally (its webViewLink), for files and folders alike.
+        row.addEventListener('click', () => {
+          selectEntry(entry);
           if (entry.isFolder) {
             navigateTo({ type: 'folder', folderId: entry.id, name: entry.name });
-          } else {
-            openEntry(entry);
           }
         });
+        row.addEventListener('dblclick', () => openEntry(entry));
       }
     }
 
