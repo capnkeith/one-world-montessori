@@ -123,14 +123,18 @@ function startServer({
   const leaseReclaimInterval = setInterval(reclaimStaleLeases, leaseReclaimIntervalMs);
 
   // Reads replies to jobs that emailed someone and are waiting on a
-  // response (e.g. send-monthly-invoice-email), has Claude interpret
-  // whatever came back, and records it as feedback on that run — the
-  // "someone can type whatever they want and it gets resolved" loop.
-  // A quieter cadence than job execution: replies arrive on human time,
-  // not machine time.
+  // response (e.g. send-monthly-invoice-email) and surfaces whatever came
+  // back — it never resolves anything itself (no Anthropic API call, no
+  // per-token cost for an always-on loop). Actually resolving a pending
+  // reply is a Claude Code session's job now, per CLAUDE.md's startup
+  // instruction; this timer just logs that something is waiting so it
+  // doesn't sit unnoticed between sessions. A quieter cadence than job
+  // execution: replies arrive on human time, not machine time.
   const checkReplies = () => {
     toolSet.invoke('disputeResolver', { action: 'checkReplies' }).then(({ result }) => {
-      if (result.resolved > 0) console.log(`[disputeResolver] resolved ${result.resolved} of ${result.checked} pending reply(s)`);
+      if (result.pending.length > 0) {
+        console.log(`[disputeResolver] ${result.pending.length} of ${result.checked} pending reply(s) waiting — open a Claude Code session in this repo to process them.`);
+      }
     }).catch((err) => {
       console.error('disputeResolver checkReplies failed:', err.message);
     });

@@ -104,7 +104,6 @@ function buildToolSet({
   const disputeResolverTool = createDisputeResolverTool({
     getSchedulerTool: () => schedulerTool,
     getMailTool: () => mailTool,
-    getClaudeTool: () => claudeTool,
   });
   toolSet.register(disputeResolverTool);
 

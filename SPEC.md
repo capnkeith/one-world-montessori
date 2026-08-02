@@ -246,6 +246,34 @@ The first tool that talks to a real Google Workspace resource — deliberately j
 
 **Still open:** this only reads (no open/download of actual file *content* yet — Drive API's `files.get` with `alt=media` is the next piece if that's wanted), and it authenticates one account at a time per machine, not yet distributed as an easy setup flow for other users.
 
+## Automated email reply handling (`disputeResolver`, `scheduler`, `mail`)
+
+A job that emails someone (e.g. `send-monthly-invoice-email`) often
+gets a reply that needs a decision: approve, fix a param, or escalate
+to a human. `disputeResolver.checkReplies` finds unresolved reply
+threads and returns them as plain data — **it deliberately never calls
+the Anthropic API itself**. `claude.js`'s `interpretReply` action can
+do that same reasoning agentically, but it bills per token, and an
+always-on background loop calling it wasn't something Seth wanted to
+pay for on top of whatever Claude Code/claude.ai plan already covers a
+real session. So the resolving step is done by a Claude Code session
+instead — see `CLAUDE.md` at the repo root, which any session opened
+here picks up automatically, telling it to check for pending replies
+at startup and resolve them directly via `scheduler`/`mail`, under the
+same guardrails.
+
+**DLP guardrail (hard, not just prompted):** no OWM Drive content may
+ever leave via email. `mail.send` rejects any attachment not tagged
+`source: 'rendered'` (built fresh by a rendering tool, e.g.
+`invoice`/`pdf`) or `'job-defined'` (fixed on the job at `addJob` time)
+— see `src/tools/mail.js`'s `assertAttachmentsAllowed`.
+`Scheduler.updateJob` deliberately never touches a job's `attachments`
+or `type`, even if asked to, so nothing (a careless job handler, a
+future Claude tool, an agent following CLAUDE.md) can redirect a job
+into attaching something it wasn't created with, or turn it into a
+different kind of job. `escalate_to_seth` (the `claude` tool's
+escape-hatch action) has no attachment parameter at all.
+
 ## Running everything
 
 ```

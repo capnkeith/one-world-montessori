@@ -5,31 +5,31 @@ const { z } = require('zod');
 const { Tool } = require('../core/Tool');
 
 /**
- * The reusable recipe for "let Claude handle email" Seth asked for, not
- * a one-off for send-monthly-invoice-email specifically: finds job history
- * entries with an unresolved Gmail thread, reads whatever came back, and
- * hands it to `claude`'s interpretReply — which now has real tool access
- * (via ctx.call, same as any other agentic claude action) to fix the job
- * itself (scheduler.updateJob) when the reply points out something
- * unambiguous, or escalate straight to Seth by email (mail.send) when it
- * can't confidently resolve things alone. This tool's own job is just:
- * find unresolved replies, hand each to Claude, record whatever Claude
- * decided via `scheduler`'s recordFeedback. Never does meaningful work
- * (never calls Claude) when there's nothing new to check — cheap to poll
- * often. Nobody has to click a fixed "approve" button - they can type
- * whatever they want, and any future job type that emails someone and
- * expects a reply gets this same handling for free.
+ * Finds job history entries with an unresolved Gmail thread and surfaces
+ * whatever came back as plain data — it deliberately does NOT call
+ * `claude.interpretReply` (or any Anthropic API) itself. That action
+ * still exists on the `claude` tool and still works, but billing per
+ * token for an always-on background loop wasn't something Seth wanted
+ * to pay for, separately from whatever Claude Code/claude.ai plan is
+ * already covering a real session. Instead, a Claude Code session (see
+ * CLAUDE.md's startup instruction) calls checkReplies, reads
+ * `result.pending`, and resolves each entry itself — patching a job's
+ * params via `scheduler.updateJob`, escalating via `mail.send`, or just
+ * recording `{outcome: 'approved'}` — then calls `scheduler.recordFeedback`
+ * directly. Never does meaningful work (never touches Gmail beyond a
+ * cheap thread fetch) when there's nothing new to check — cheap to poll
+ * often even though nothing here spends a token.
  *
  * Deliberately its own tool rather than folded into scheduler.js or
- * mail.js: it depends on both of those plus claude, and none of the
- * three should need to know about this orchestration to work standalone.
+ * mail.js: it depends on both of those, and neither should need to know
+ * about this orchestration to work standalone.
  */
-function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeTool }) {
+function createDisputeResolverTool({ getSchedulerTool, getMailTool }) {
   return new Tool({
     name: 'disputeResolver',
-    version: '1.1.0',
+    version: '2.0.0',
     description:
-      "Reads replies to a job's sent email and has Claude resolve them — fixing the job itself when the reply is unambiguous, escalating to Seth by email otherwise — recording the outcome as feedback on that run.",
+      "Finds unresolved replies to a job's sent email and returns them as data for an agent to resolve (see CLAUDE.md) — never calls the Anthropic API itself.",
     mcpInputSchema: {
       action: z.enum(['checkReplies']).optional(),
     },
@@ -37,15 +37,14 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
     run: async () => {
       const schedulerTool = getSchedulerTool();
       const mailTool = getMailTool();
-      const claudeTool = getClaudeTool();
 
       const { result: who } = await mailTool.invoke({ action: 'whoami' });
       const ownEmail = who.emailAddress;
 
       const { result: listed } = await schedulerTool.invoke({ action: 'listJobs' });
 
+      const pending = [];
       let checked = 0;
-      let resolved = 0;
 
       for (const job of listed.jobs) {
         for (let runIndex = 0; runIndex < job.history.length; runIndex++) {
@@ -59,34 +58,32 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
           if (replies.length === 0) continue;
 
           const latestReply = replies[replies.length - 1];
-          const { result: resolution } = await claudeTool.invoke({
-            action: 'interpretReply',
-            replyText: latestReply.body,
-            context: { jobId: job.id, jobLabel: job.label, jobType: job.type, jobParams: job.params },
-          });
-
-          await schedulerTool.invoke({
-            action: 'recordFeedback',
-            id: job.id,
+          pending.push({
+            jobId: job.id,
             runIndex,
-            feedback: { ...resolution, repliedMessageId: latestReply.id, repliedFrom: latestReply.from },
+            jobLabel: job.label,
+            jobType: job.type,
+            jobParams: job.params,
+            replyText: latestReply.body,
+            repliedMessageId: latestReply.id,
+            repliedFrom: latestReply.from,
           });
-          resolved += 1;
         }
       }
 
-      return { checked, resolved };
+      return { checked, pending };
     },
 
-    // Fully fake scheduler/mail/claude tool stand-ins - never touches a
-    // real inbox, a real job store, or a real Anthropic client.
+    // Fully fake scheduler/mail tool stand-ins - never touches a real
+    // inbox or a real job store. No claude tool stand-in at all anymore —
+    // this tool has no dependency on it.
     internalTest: async ({ call }) => {
       const jobs = [
         {
           id: 'job-1',
           label: 'Monthly invoice',
           type: 'send-monthly-invoice-email',
-          params: {},
+          params: { to: 'businessmanager@oneworldmontessori.org' },
           history: [
             { status: 'success', detail: { threadId: 'thread-with-reply' } },
             { status: 'success', detail: { threadId: 'thread-no-reply-yet' } },
@@ -95,7 +92,6 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
           ],
         },
       ];
-      let recordedFeedback = null;
 
       const fakeMailTool = {
         invoke: async (params) => {
@@ -117,21 +113,9 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
           throw new Error(`unexpected mail action ${params.action}`);
         },
       };
-      const fakeClaudeTool = {
-        invoke: async (params) => {
-          assert.strictEqual(params.action, 'interpretReply');
-          assert.strictEqual(params.replyText, 'Looks correct, approved.');
-          assert.strictEqual(params.context.jobId, 'job-1', 'jobId must be passed through so interpretReply can act on the right job');
-          return { result: { outcome: 'approved', note: 'Fake interpretation' } };
-        },
-      };
       const fakeSchedulerTool = {
         invoke: async (params) => {
           if (params.action === 'listJobs') return { result: { jobs } };
-          if (params.action === 'recordFeedback') {
-            recordedFeedback = params;
-            return { result: { ...jobs[0] } };
-          }
           throw new Error(`unexpected scheduler action ${params.action}`);
         },
       };
@@ -139,17 +123,18 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
       const fakeTool = createDisputeResolverTool({
         getSchedulerTool: () => fakeSchedulerTool,
         getMailTool: () => fakeMailTool,
-        getClaudeTool: () => fakeClaudeTool,
       });
 
       const { result } = await fakeTool.invoke({ action: 'checkReplies' });
       assert.strictEqual(result.checked, 2, 'must skip the already-resolved and the failed-send entries');
-      assert.strictEqual(result.resolved, 1, 'must only resolve the entry that actually has a reply');
-      assert.ok(recordedFeedback);
-      assert.strictEqual(recordedFeedback.id, 'job-1');
-      assert.strictEqual(recordedFeedback.runIndex, 0);
-      assert.strictEqual(recordedFeedback.feedback.outcome, 'approved');
-      assert.strictEqual(recordedFeedback.feedback.repliedMessageId, 'reply-1');
+      assert.strictEqual(result.pending.length, 1, 'must only surface the entry that actually has a reply');
+      const [entry] = result.pending;
+      assert.strictEqual(entry.jobId, 'job-1');
+      assert.strictEqual(entry.runIndex, 0);
+      assert.strictEqual(entry.replyText, 'Looks correct, approved.');
+      assert.strictEqual(entry.repliedMessageId, 'reply-1');
+      assert.strictEqual(entry.repliedFrom, 'businessmanager@oneworldmontessori.org');
+      assert.deepStrictEqual(entry.jobParams, { to: 'businessmanager@oneworldmontessori.org' });
 
       return { passed: true };
     },
@@ -159,11 +144,12 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
         return {
           passed: true,
           skipped: true,
-          reason: 'testConfig.runDisputeResolverCheck not set — skipping (this would call the real mail/claude tools)',
+          reason: 'testConfig.runDisputeResolverCheck not set — skipping (this would call the real mail tool)',
         };
       }
       const { result } = await call({ action: 'checkReplies' });
       assert.ok(typeof result.checked === 'number');
+      assert.ok(Array.isArray(result.pending));
       return { passed: true, checkedAgainst: testConfig.label ?? 'unnamed-fixture' };
     },
   });
