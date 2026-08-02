@@ -29,3 +29,33 @@ test('getDropboxClient refuses to launch a real consent flow when there is no in
     process.stdout.isTTY = originalIsTTY;
   }
 });
+
+test('getDropboxClient finds a refresh token published by another node via sharedSecretStore before falling back to consent', async () => {
+  const secretStore = fakeSecretStore({ dropbox_app_key: 'fake-app-key' });
+  let sharedLookups = 0;
+  const sharedSecretStore = {
+    getShared: async (name) => {
+      sharedLookups += 1;
+      return name === 'dropbox_refresh_token' ? 'shared-refresh-token' : null;
+    },
+  };
+
+  const client = await getDropboxClient({ secretStore, sharedSecretStore });
+  assert.ok(client, 'must return a usable client without falling back to the interactive consent flow');
+  assert.strictEqual(sharedLookups, 1);
+  // Caching the shared value into the local SecretStore is SharedSecretStore's
+  // own job (covered in SharedSecretStore.test.js) — dropboxAuth just consumes
+  // whatever getShared returns.
+});
+
+test('getDropboxClient still refuses to open a browser when sharedSecretStore has nothing and there is no interactive terminal', async () => {
+  const originalIsTTY = process.stdout.isTTY;
+  process.stdout.isTTY = false;
+  try {
+    const secretStore = fakeSecretStore({ dropbox_app_key: 'fake-app-key' });
+    const sharedSecretStore = { getShared: async () => null };
+    await assert.rejects(() => getDropboxClient({ secretStore, sharedSecretStore }), /no interactive terminal/);
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+  }
+});

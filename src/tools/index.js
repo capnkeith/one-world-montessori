@@ -17,6 +17,7 @@ const { createClaudeTool } = require('./claude');
  */
 function buildToolSet({
   secretStore,
+  sharedSecretStore,
   profile,
   channel,
   instanceId,
@@ -50,7 +51,7 @@ function buildToolSet({
   const driveTool = createDriveTool({ secretStore, profile });
   toolSet.register(driveTool);
 
-  const dropboxTool = createDropboxTool({ secretStore });
+  const dropboxTool = createDropboxTool({ secretStore, sharedSecretStore });
   toolSet.register(dropboxTool);
 
   const catalogTool = createCatalogTool({

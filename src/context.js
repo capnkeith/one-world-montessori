@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { createSecretStore } = require('./core/SecretStore');
+const { SharedSecretStore, createGoogleSecretManagerClient } = require('./core/SharedSecretStore');
 const { Profile } = require('./core/Profile');
 const { InMemoryChannel } = require('./core/Channel');
 const { InMemoryCatalogEventLog } = require('./core/CatalogEventLog');
@@ -28,6 +29,10 @@ const paths = require('./core/paths');
  */
 function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryChannel() } = {}) {
   const secretStore = createSecretStore(path.join(stateRoot, 'secrets'));
+  const sharedSecretStore = new SharedSecretStore({
+    secretStore,
+    secretManagerClient: createGoogleSecretManagerClient({ secretStore }),
+  });
   const profile = new Profile(path.join(stateRoot, 'profile.json'));
 
   let profileData = profile.load();
@@ -50,6 +55,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
 
   const toolSet = buildToolSet({
     secretStore,
+    sharedSecretStore,
     profile,
     channel,
     instanceId: profileData.instanceId,
@@ -59,7 +65,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     persistCatalogSnapshot,
   });
 
-  return { secretStore, profile, toolSet, channel, catalog, stateRoot, instanceId: profileData.instanceId };
+  return { secretStore, sharedSecretStore, profile, toolSet, channel, catalog, stateRoot, instanceId: profileData.instanceId };
 }
 
 module.exports = { createContext };

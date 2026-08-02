@@ -16,7 +16,7 @@ const TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
  * same reasoning as Drive's Desktop OAuth client), the refresh token
  * is per-user and never shared.
  */
-async function getDropboxClient({ secretStore }) {
+async function getDropboxClient({ secretStore, sharedSecretStore }) {
   const appKey = secretStore.get('dropbox_app_key');
   if (!appKey) {
     throw new Error(
@@ -25,17 +25,27 @@ async function getDropboxClient({ secretStore }) {
   }
 
   let refreshToken = secretStore.get('dropbox_refresh_token');
+
+  // This is one shared Dropbox account across every node - before running
+  // our own interactive consent, check whether some other node already
+  // completed it and published the resulting token via Secret Manager.
+  if (!refreshToken && sharedSecretStore) {
+    refreshToken = await sharedSecretStore.getShared('dropbox_refresh_token');
+  }
+
   if (!refreshToken) {
     if (!process.stdout.isTTY) {
       throw new Error(
-        'No cached Dropbox credentials, and this process has no interactive terminal to open a consent ' +
-          "browser from — refusing to try (a background/service process silently popping browser windows " +
-          'is exactly what caused the 2026-08-01 incident). Run `node src/cli.js call dropbox \'{"action":"browse"}\'` ' +
-          'from a real terminal once to authorize this machine, then background processes will reuse the cached token.'
+        'No cached Dropbox credentials (checked locally and, if configured, Secret Manager), and this process ' +
+          'has no interactive terminal to open a consent browser from — refusing to try (a background/service ' +
+          'process silently popping browser windows is exactly what caused the 2026-08-01 incident). Run ' +
+          '`node src/cli.js call dropbox \'{"action":"browse"}\'` from a real terminal once to authorize this ' +
+          'machine, then background processes will reuse the cached token.'
       );
     }
     refreshToken = await runConsentFlow(appKey);
     secretStore.set('dropbox_refresh_token', refreshToken);
+    if (sharedSecretStore) await sharedSecretStore.setShared('dropbox_refresh_token', refreshToken);
   }
 
   return {

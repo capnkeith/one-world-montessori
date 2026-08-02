@@ -23,7 +23,7 @@ function mapEntry(e) {
  * addresses things by path (not a folder-id tree like Drive), so
  * `folderId` here is actually a path ("" for root).
  */
-function createDropboxTool({ secretStore, dropboxClientFactory = getDropboxClient }) {
+function createDropboxTool({ secretStore, sharedSecretStore, dropboxClientFactory = getDropboxClient }) {
   let cachedClient = null;
 
   return new Tool({
@@ -48,7 +48,7 @@ function createDropboxTool({ secretStore, dropboxClientFactory = getDropboxClien
       }
 
       if (!cachedClient) {
-        cachedClient = await dropboxClientFactory({ secretStore });
+        cachedClient = await dropboxClientFactory({ secretStore, sharedSecretStore });
       }
 
       if (action === 'browse') {
