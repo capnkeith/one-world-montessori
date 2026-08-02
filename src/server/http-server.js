@@ -51,6 +51,7 @@ function startServer({
   announceIntervalMs = 30_000,
   adminPollIntervalMs = 10_000,
   jobPollIntervalMs = 60 * 60_000,
+  replyPollIntervalMs = 15 * 60_000,
   runUpdateAndExit = defaultRunUpdateAndExit,
 } = {}) {
   const { toolSet } = createContext({ stateRoot, channel });
@@ -103,6 +104,22 @@ function startServer({
   };
   runDueJobs();
   const jobPollInterval = setInterval(runDueJobs, jobPollIntervalMs);
+
+  // Reads replies to jobs that emailed someone and are waiting on a
+  // response (e.g. send-monthly-invoice-email), has Claude interpret
+  // whatever came back, and records it as feedback on that run — the
+  // "someone can type whatever they want and it gets resolved" loop.
+  // A quieter cadence than job execution: replies arrive on human time,
+  // not machine time.
+  const checkReplies = () => {
+    toolSet.invoke('disputeResolver', { action: 'checkReplies' }).then(({ result }) => {
+      if (result.resolved > 0) console.log(`[disputeResolver] resolved ${result.resolved} of ${result.checked} pending reply(s)`);
+    }).catch((err) => {
+      console.error('disputeResolver checkReplies failed:', err.message);
+    });
+  };
+  checkReplies();
+  const replyPollInterval = setInterval(checkReplies, replyPollIntervalMs);
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -161,6 +178,7 @@ function startServer({
     clearInterval(announceInterval);
     clearInterval(adminPollInterval);
     clearInterval(jobPollInterval);
+    clearInterval(replyPollInterval);
   });
   server.listen(port, '127.0.0.1');
   return server;

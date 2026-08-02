@@ -12,6 +12,7 @@ const { createClaudeTool } = require('./claude');
 const { createSchedulerTool } = require('./scheduler');
 const { buildJobHandlers } = require('./jobHandlers');
 const { createMailTool } = require('./mail');
+const { createDisputeResolverTool } = require('./disputeResolver');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -77,6 +78,13 @@ function buildToolSet({
 
   const schedulerTool = createSchedulerTool({ jobStore, handlers: buildJobHandlers({ getMailTool: () => mailTool }) });
   toolSet.register(schedulerTool);
+
+  const disputeResolverTool = createDisputeResolverTool({
+    getSchedulerTool: () => schedulerTool,
+    getMailTool: () => mailTool,
+    getClaudeTool: () => claudeTool,
+  });
+  toolSet.register(disputeResolverTool);
 
   return toolSet;
 }
