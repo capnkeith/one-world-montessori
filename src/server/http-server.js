@@ -52,6 +52,7 @@ function startServer({
   adminPollIntervalMs = 10_000,
   jobPollIntervalMs = 60 * 60_000,
   replyPollIntervalMs = 15 * 60_000,
+  leaseReclaimIntervalMs = 5 * 60_000,
   runUpdateAndExit = defaultRunUpdateAndExit,
 } = {}) {
   const { toolSet } = createContext({ stateRoot, channel });
@@ -104,6 +105,22 @@ function startServer({
   };
   runDueJobs();
   const jobPollInterval = setInterval(runDueJobs, jobPollIntervalMs);
+
+  // A node that claims a job and then dies/hangs mid-run leaves it
+  // stuck as 'claimed' forever unless something notices the lease
+  // expired (see Scheduler.reclaimStaleLeases). Every node ticks this
+  // independently - reclaiming is itself an atomic per-job mutation, so
+  // multiple nodes doing it concurrently is safe, just redundant.
+  const reclaimStaleLeases = () => {
+    toolSet.invoke('scheduler', { action: 'reclaimStaleLeases' }).then(({ result }) => {
+      if (result.stuckCount > 0) console.log(`[scheduler] ${result.stuckCount} job(s) stuck - needs a human`);
+      if (result.releasedCount > 0) console.log(`[scheduler] released ${result.releasedCount} stale claim(s) for retry`);
+    }).catch((err) => {
+      console.error('scheduler reclaimStaleLeases failed:', err.message);
+    });
+  };
+  reclaimStaleLeases();
+  const leaseReclaimInterval = setInterval(reclaimStaleLeases, leaseReclaimIntervalMs);
 
   // Reads replies to jobs that emailed someone and are waiting on a
   // response (e.g. send-monthly-invoice-email), has Claude interpret
@@ -179,6 +196,7 @@ function startServer({
     clearInterval(adminPollInterval);
     clearInterval(jobPollInterval);
     clearInterval(replyPollInterval);
+    clearInterval(leaseReclaimInterval);
   });
   server.listen(port, '127.0.0.1');
   return server;

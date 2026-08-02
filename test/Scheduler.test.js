@@ -11,6 +11,12 @@ function fakeStore(initial = []) {
     save: (next) => {
       jobs = next;
     },
+    mutate: (id, updaterFn) => {
+      const job = jobs.find((j) => j.id === id);
+      if (!job) return null;
+      const shouldSave = updaterFn(job);
+      return shouldSave ? job : null;
+    },
   };
 }
 
@@ -28,7 +34,7 @@ test('computeNextMonthlyRun picks this month if the day hasn\'t passed yet, othe
   assert.strictEqual(rolledOver.getDate(), 2);
 });
 
-test('addJob computes nextRunAt from the schedule and defaults to status scheduled', () => {
+test('addJob computes nextRunAt from the schedule, defaults to status scheduled and retryPolicy idempotent', () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const now = new Date(2026, 7, 1, 12, 0);
   const job = scheduler.addJob({
@@ -40,11 +46,24 @@ test('addJob computes nextRunAt from the schedule and defaults to status schedul
   });
 
   assert.strictEqual(job.status, 'scheduled');
+  assert.strictEqual(job.retryPolicy, 'idempotent');
+  assert.strictEqual(job.claimedBy, null);
   assert.strictEqual(new Date(job.nextRunAt).getDate(), 2);
   assert.strictEqual(job.history.length, 0);
 });
 
-test('runJob executes the registered handler, records history, and reschedules a recurring job', async () => {
+test('addJob accepts an explicit retryPolicy (e.g. at-most-once for side-effecting jobs)', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'send-invoice',
+    schedule: { type: 'monthly', dayOfMonth: 2 },
+    retryPolicy: 'at-most-once',
+    now: new Date(2026, 7, 1),
+  });
+  assert.strictEqual(job.retryPolicy, 'at-most-once');
+});
+
+test('runJob claims the job, executes the handler, records history, and reschedules a recurring job', async () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const now = new Date(2026, 7, 1, 12, 0);
   const job = scheduler.addJob({
@@ -68,8 +87,10 @@ test('runJob executes the registered handler, records history, and reschedules a
   assert.deepStrictEqual(sentTo, ['businessmanager@oneworldmontessori.org']);
   assert.strictEqual(updated.history.length, 1);
   assert.strictEqual(updated.history[0].status, 'success');
+  assert.deepStrictEqual(updated.history[0].detail, { sent: true });
   assert.strictEqual(updated.lastRunAt, ranAt.toISOString());
   assert.strictEqual(updated.status, 'scheduled', 'a recurring job stays scheduled after running');
+  assert.strictEqual(updated.claimedBy, null, 'the claim must be released after completion');
   assert.strictEqual(new Date(updated.nextRunAt).getMonth(), 8, 'monthly job reschedules into the following month');
 });
 
@@ -89,7 +110,7 @@ test('runJob records a failed run instead of throwing when the handler itself th
   assert.strictEqual(updated.status, 'completed', 'a one-off job completes (stops being scheduled) even if its run failed');
 });
 
-test('runJob throws a clear error when no handler is registered for the job type', async () => {
+test('runJob records a failed run (does not throw) when no handler is registered for the job type', async () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const job = scheduler.addJob({
     type: 'send-invoice',
@@ -97,7 +118,25 @@ test('runJob throws a clear error when no handler is registered for the job type
     now: new Date(2026, 7, 1),
   });
 
-  await assert.rejects(() => scheduler.runJob(job.id, { handlers: {} }), /No handler registered/);
+  const updated = await scheduler.runJob(job.id, { handlers: {} });
+  assert.strictEqual(updated.history[0].status, 'failed');
+  assert.match(updated.history[0].error, /No handler registered/);
+  assert.strictEqual(updated.claimedBy, null, 'the claim must still be released even on this failure path');
+});
+
+test('runJob throws when the job is already claimed by someone else', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'monthly', dayOfMonth: 2 },
+    now: new Date(2026, 7, 1),
+  });
+  scheduler.claimJob(job.id, { nodeId: 'node-a', now: new Date(2026, 7, 2) });
+
+  await assert.rejects(
+    () => scheduler.runJob(job.id, { handlers: { a: async () => {} }, nodeId: 'node-b' }),
+    /already claimed/
+  );
 });
 
 test('runDueJobs only runs jobs whose nextRunAt has passed, leaving future jobs untouched', async () => {
@@ -125,6 +164,19 @@ test('runDueJobs only runs jobs whose nextRunAt has passed, leaving future jobs 
   assert.strictEqual(scheduler.getJob(futureJob.id).status, 'scheduled', 'future job must not have run');
 });
 
+test('runDueJobs runs every due job in one pass, not just the first', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const now = new Date(2026, 7, 1);
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 1).toISOString() }, now });
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 15).toISOString() }, now });
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 8, 1).toISOString() }, now }); // not due
+
+  let calls = 0;
+  const result = await scheduler.runDueJobs({ handlers: { a: async () => { calls += 1; } }, now: new Date(2026, 7, 2) });
+  assert.strictEqual(result.ranCount, 2);
+  assert.strictEqual(calls, 2);
+});
+
 test('updateJob merges a patch into an existing job and recomputes nextRunAt only if the schedule changed', () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const job = scheduler.addJob({
@@ -145,6 +197,9 @@ test('updateJob merges a patch into an existing job and recomputes nextRunAt onl
     { now: new Date(2026, 7, 1) }
   );
   assert.strictEqual(new Date(withNewSchedule.nextRunAt).getDate(), 15);
+
+  const withNewRetryPolicy = scheduler.updateJob(job.id, { retryPolicy: 'at-most-once' });
+  assert.strictEqual(withNewRetryPolicy.retryPolicy, 'at-most-once');
 });
 
 test('addJob fixes attachments at creation time, defaulting to none', () => {
@@ -228,4 +283,102 @@ test('recordFeedback attaches feedback to a specific run without disturbing othe
   const updated = scheduler.recordFeedback({ id: job.id, runIndex: 1, feedback: { approved: false, note: 'wrong amount' } });
   assert.strictEqual(updated.history[0].feedback, undefined, 'only the targeted run gets feedback');
   assert.deepStrictEqual(updated.history[1].feedback, { approved: false, note: 'wrong amount' });
+});
+
+// --- Distributed claim/lease/reclaim behavior ---
+
+test('claimNextDueJob marks the job claimed with the claiming node and a lease expiry', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const now = new Date(2026, 7, 1);
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 1).toISOString() }, now });
+
+  const claimed = scheduler.claimNextDueJob({ nodeId: 'node-a', now: new Date(2026, 7, 2), leaseMs: 60_000 });
+  assert.strictEqual(claimed.status, 'claimed');
+  assert.strictEqual(claimed.claimedBy, 'node-a');
+  assert.strictEqual(new Date(claimed.leaseExpiresAt).getTime(), new Date(2026, 7, 2).getTime() + 60_000);
+});
+
+test('claimNextDueJob never lets two nodes claim the same job', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const now = new Date(2026, 7, 1);
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 1).toISOString() }, now });
+
+  const claimedByA = scheduler.claimNextDueJob({ nodeId: 'node-a', now: new Date(2026, 7, 2) });
+  const claimedByB = scheduler.claimNextDueJob({ nodeId: 'node-b', now: new Date(2026, 7, 2) });
+  assert.ok(claimedByA);
+  assert.strictEqual(claimedByB, null, 'a second claim attempt must find nothing left to claim');
+});
+
+test('claimNextDueJob moves on to the next candidate rather than returning null on the first unclaimable one', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const now = new Date(2026, 7, 1);
+  const first = scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 1).toISOString() }, now });
+  scheduler.addJob({ type: 'a', schedule: { type: 'once', at: new Date(2026, 6, 2).toISOString() }, now });
+
+  scheduler.claimJob(first.id, { nodeId: 'node-a', now: new Date(2026, 7, 2) });
+  const claimed = scheduler.claimNextDueJob({ nodeId: 'node-b', now: new Date(2026, 7, 2) });
+  assert.ok(claimed, 'must still find the second due job even though the first was already claimed');
+  assert.notStrictEqual(claimed.id, first.id);
+});
+
+test('completeJob refuses to complete a job claimed by a different node', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({ type: 'a', schedule: { type: 'monthly', dayOfMonth: 2 }, now: new Date(2026, 7, 1) });
+  scheduler.claimJob(job.id, { nodeId: 'node-a', now: new Date(2026, 7, 2) });
+
+  assert.throws(
+    () => scheduler.completeJob({ id: job.id, nodeId: 'node-b', status: 'success', now: new Date(2026, 7, 2) }),
+    /not claimed by node-b/
+  );
+});
+
+test('reclaimStaleLeases releases an idempotent job back to scheduled so it is immediately reclaimable', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'monthly', dayOfMonth: 2 },
+    retryPolicy: 'idempotent',
+    now: new Date(2026, 7, 1),
+  });
+  scheduler.claimJob(job.id, { nodeId: 'node-a', now: new Date(2026, 7, 2, 10, 0), leaseMs: 1000 }); // past the 9am due time
+  const result = scheduler.reclaimStaleLeases({ now: new Date(2026, 7, 2, 10, 0, 5) }); // 5s later, past the 1s lease
+  assert.strictEqual(result.releasedCount, 1);
+  assert.strictEqual(result.stuckCount, 0);
+  const reclaimed = scheduler.getJob(job.id);
+  assert.strictEqual(reclaimed.status, 'scheduled');
+  assert.strictEqual(reclaimed.claimedBy, null, 'the stale claim must be cleared');
+
+  const reClaimed = scheduler.claimNextDueJob({ nodeId: 'node-b', now: new Date(2026, 7, 2, 10, 0, 6) });
+  assert.ok(reClaimed, 'must be claimable again immediately after release');
+});
+
+test('reclaimStaleLeases marks an at-most-once job stuck instead of silently retrying it', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'send-monthly-invoice-email',
+    schedule: { type: 'monthly', dayOfMonth: 2 },
+    retryPolicy: 'at-most-once',
+    now: new Date(2026, 7, 1),
+  });
+  scheduler.claimJob(job.id, { nodeId: 'node-a', now: new Date(2026, 7, 2), leaseMs: 1000 });
+
+  const result = scheduler.reclaimStaleLeases({ now: new Date(2026, 7, 2, 0, 0, 5) });
+  assert.strictEqual(result.releasedCount, 0);
+  assert.strictEqual(result.stuckCount, 1);
+  const stuck = scheduler.getJob(job.id);
+  assert.strictEqual(stuck.status, 'stuck');
+
+  const reClaimed = scheduler.claimNextDueJob({ nodeId: 'node-b', now: new Date(2026, 7, 2, 0, 0, 6) });
+  assert.strictEqual(reClaimed, null, 'a stuck at-most-once job must never be auto-retried');
+});
+
+test('reclaimStaleLeases leaves a still-valid (not yet expired) lease alone', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({ type: 'a', schedule: { type: 'monthly', dayOfMonth: 2 }, now: new Date(2026, 7, 1) });
+  scheduler.claimJob(job.id, { nodeId: 'node-a', now: new Date(2026, 7, 2), leaseMs: 60_000 });
+
+  const result = scheduler.reclaimStaleLeases({ now: new Date(2026, 7, 2, 0, 0, 5) }); // well within the 60s lease
+  assert.strictEqual(result.releasedCount, 0);
+  assert.strictEqual(result.stuckCount, 0);
+  assert.strictEqual(scheduler.getJob(job.id).status, 'claimed', 'a job still within its lease must not be touched');
 });
