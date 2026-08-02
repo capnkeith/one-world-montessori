@@ -15,7 +15,13 @@ const { InvoiceCounter } = require('./core/InvoiceCounter');
 const { buildToolSet } = require('./tools');
 const paths = require('./core/paths');
 
-const INVOICE_LOGO_PATH = path.join(__dirname, '..', 'assets', 'owm-logo.png');
+// JPEG, not PNG: pdfkit's PNG decoder renders this specific logo's colors
+// wrong (confirmed by isolating it — a synthetic flat-color PNG through
+// the exact same pdfkit->render pipeline came out fine, so this isn't a
+// general PNG bug, just this image). JPEG embeds correctly. The
+// canonical PNG (used by the sample app) is untouched; this is a
+// separate flattened-to-white copy just for the PDF invoice.
+const INVOICE_LOGO_PATH = path.join(__dirname, '..', 'assets', 'owm-logo.jpg');
 
 /**
  * Constructs the shared runtime context (secretStore, profile, toolSet)

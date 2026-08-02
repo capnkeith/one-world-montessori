@@ -13,6 +13,8 @@ const { createSchedulerTool } = require('./scheduler');
 const { buildJobHandlers } = require('./jobHandlers');
 const { createMailTool } = require('./mail');
 const { createDisputeResolverTool } = require('./disputeResolver');
+const { createPdfTool } = require('./pdf');
+const { createInvoiceTool } = require('./invoice');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -78,9 +80,19 @@ function buildToolSet({
   const mailTool = createMailTool({ secretStore });
   toolSet.register(mailTool);
 
+  const pdfTool = createPdfTool();
+  toolSet.register(pdfTool);
+
+  const invoiceTool = createInvoiceTool({
+    invoiceCounter,
+    logoBuffer: invoiceLogoBuffer,
+    getPdfTool: () => pdfTool,
+  });
+  toolSet.register(invoiceTool);
+
   const schedulerTool = createSchedulerTool({
     jobStore,
-    handlers: buildJobHandlers({ getMailTool: () => mailTool, invoiceCounter, logoBuffer: invoiceLogoBuffer }),
+    handlers: buildJobHandlers({ getMailTool: () => mailTool, getInvoiceTool: () => invoiceTool }),
   });
   toolSet.register(schedulerTool);
 
