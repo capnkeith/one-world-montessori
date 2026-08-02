@@ -5,6 +5,7 @@ const { URL } = require('node:url');
 const { exec } = require('node:child_process');
 const { google } = require('googleapis');
 const DEFAULT_CLIENT_JSON = require('./default-google-oauth-client.json');
+const { isInteractiveConsentAllowed } = require('./interactiveConsent');
 
 // Kept under its own refresh token (`gmail_refresh_token`), separate from
 // Drive's and Secret Manager's, for the same blast-radius reason as
@@ -36,7 +37,7 @@ async function getGmailClient({ secretStore }) {
     return google.gmail({ version: 'v1', auth: oauth2Client });
   }
 
-  if (!process.stdout.isTTY) {
+  if (!isInteractiveConsentAllowed()) {
     throw new Error(
       'No cached Gmail credentials, and this process has no interactive terminal to open a consent browser ' +
         'from — refusing to try (see the 2026-08-01 runaway-browser incident notes in TODO.md). Run ' +

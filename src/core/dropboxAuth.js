@@ -4,6 +4,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const { exec } = require('node:child_process');
+const { isInteractiveConsentAllowed } = require('./interactiveConsent');
 
 const AUTHORIZE_URL = 'https://www.dropbox.com/oauth2/authorize';
 const TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
@@ -34,7 +35,7 @@ async function getDropboxClient({ secretStore, sharedSecretStore }) {
   }
 
   if (!refreshToken) {
-    if (!process.stdout.isTTY) {
+    if (!isInteractiveConsentAllowed()) {
       throw new Error(
         'No cached Dropbox credentials (checked locally and, if configured, Secret Manager), and this process ' +
           'has no interactive terminal to open a consent browser from — refusing to try (a background/service ' +

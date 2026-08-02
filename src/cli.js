@@ -4,6 +4,11 @@
 const { createContext } = require('./context');
 const { SERVER_VERSION } = require('./version');
 
+// The CLI is only ever run directly by a human (never by the automated
+// boot/supervisor/install pipeline) - see src/core/interactiveConsent.js
+// for why this can't just be process.stdout.isTTY.
+process.env.OWM_ALLOW_INTERACTIVE_CONSENT = '1';
+
 function printUsage() {
   console.log(`owm-cli ${SERVER_VERSION}
 

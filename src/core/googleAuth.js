@@ -5,6 +5,7 @@ const { URL } = require('node:url');
 const { exec } = require('node:child_process');
 const { google } = require('googleapis');
 const DEFAULT_CLIENT_JSON = require('./default-google-oauth-client.json');
+const { isInteractiveConsentAllowed } = require('./interactiveConsent');
 
 // Upgraded from drive.readonly to full drive access — createFolder/move
 // need write, and Drive has no narrower scope that covers "move any
@@ -44,7 +45,7 @@ async function getDriveClient({ secretStore }) {
   if (refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
   } else {
-    if (!process.stdout.isTTY) {
+    if (!isInteractiveConsentAllowed()) {
       throw new Error(
         'No cached Google credentials, and this process has no interactive terminal to open a consent ' +
           "browser from — refusing to try (a background/service process silently popping browser windows " +
