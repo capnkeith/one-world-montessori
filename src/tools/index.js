@@ -30,6 +30,8 @@ function buildToolSet({
   catalogEventLog,
   persistCatalogSnapshot,
   jobStore,
+  invoiceCounter,
+  invoiceLogoBuffer,
 }) {
   const toolSet = new ToolSet({ name: 'owm-tools', version: TOOLSET_VERSION, instanceId, displayName, secretStore });
 
@@ -76,7 +78,10 @@ function buildToolSet({
   const mailTool = createMailTool({ secretStore });
   toolSet.register(mailTool);
 
-  const schedulerTool = createSchedulerTool({ jobStore, handlers: buildJobHandlers({ getMailTool: () => mailTool }) });
+  const schedulerTool = createSchedulerTool({
+    jobStore,
+    handlers: buildJobHandlers({ getMailTool: () => mailTool, invoiceCounter, logoBuffer: invoiceLogoBuffer }),
+  });
   toolSet.register(schedulerTool);
 
   const disputeResolverTool = createDisputeResolverTool({

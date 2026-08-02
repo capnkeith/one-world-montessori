@@ -1,40 +1,54 @@
 'use strict';
 
+const { buildInvoicePdf } = require('../core/invoicePdf');
+
+const DEFAULT_LINE_ITEMS = [
+  {
+    description: 'OWM Claude Tools Platform — Monthly Automation (Demonstration Invoice, no payment due)',
+    amount: 0,
+  },
+];
+
+function formatInvoiceDate(date) {
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
 /**
  * Real job-type handlers for the `scheduler` tool, kept separate from the
  * scheduling mechanism itself (src/core/Scheduler.js, src/tools/scheduler.js)
  * so adding a new job type never touches scheduling logic.
  *
- * `send-monthly-invoice-email` now has a real send path (the `mail` tool,
- * Gmail API — 2026-08-01) but is still deliberately incomplete: the job's
- * `params` must carry the actual subject/body/attachment, which nobody
- * has supplied yet (Seth is crafting the real email content himself, and
- * the sending identity — his own account vs. a dedicated
- * claude@oneworldmontessori.org mailbox being set up for dispute
- * resolution — isn't decided). Running this job before those params
- * exist fails loudly with a clear explanation instead of silently
- * no-op'ing or fabricating invoice content.
+ * `send-monthly-invoice-email` (2026-08-02) generates a real PDF invoice
+ * on every run — a fresh incrementing number from `invoiceCounter`
+ * (src/core/InvoiceCounter.js), the OWM logo, a bill-to, and line items —
+ * then sends it via the `mail` tool. Line items/amount default to a
+ * clearly-labeled demonstration entry (no real dollar figure fabricated)
+ * since job.params doesn't have to carry real billing content every
+ * month; a future run can override description/billTo/lineItems via
+ * job.params if real billing content is ever supplied.
  */
-function buildJobHandlers({ getMailTool }) {
+function buildJobHandlers({ getMailTool, invoiceCounter, logoBuffer, now = () => new Date() }) {
   return {
     'send-monthly-invoice-email': async (params) => {
-      if (!params?.subject || !(params.text || params.html)) {
-        throw new Error(
-          'send-monthly-invoice-email has no real content configured yet — job.params needs at least ' +
-            '{ subject, text|html } (plus optional attachments) before this can actually send. ' +
-            'Ask Seth for the real invoice format before filling these in.'
-        );
-      }
+      const invoiceNumber = invoiceCounter.next();
+      const invoiceDate = formatInvoiceDate(now());
+      const billTo = params?.billTo ?? 'One World Montessori — Business Office';
+      const lineItems = params?.lineItems ?? DEFAULT_LINE_ITEMS;
+
+      const pdfBuffer = await buildInvoicePdf({ invoiceNumber, invoiceDate, billTo, lineItems, logoBuffer });
+
       const mailTool = getMailTool();
       const { result } = await mailTool.invoke({
         action: 'send',
-        to: params.to,
-        subject: params.subject,
-        text: params.text,
-        html: params.html,
-        attachments: params.attachments,
+        to: params?.to,
+        cc: params?.cc,
+        subject: params?.subject ?? `One World Montessori — Invoice ${invoiceNumber}`,
+        text:
+          params?.text ??
+          `Hi,\n\nAttached is invoice ${invoiceNumber}, generated automatically by the OWM Claude tools platform.\n\nBest,\nClaude`,
+        attachments: [{ filename: `${invoiceNumber}.pdf`, mimeType: 'application/pdf', contentBase64: pdfBuffer.toString('base64') }],
       });
-      return result;
+      return { ...result, invoiceNumber };
     },
   };
 }

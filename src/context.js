@@ -11,8 +11,11 @@ const { InMemoryChannel } = require('./core/Channel');
 const { InMemoryCatalogEventLog } = require('./core/CatalogEventLog');
 const { FileCatalog } = require('./core/FileCatalog');
 const { JobStore } = require('./core/JobStore');
+const { InvoiceCounter } = require('./core/InvoiceCounter');
 const { buildToolSet } = require('./tools');
 const paths = require('./core/paths');
+
+const INVOICE_LOGO_PATH = path.join(__dirname, '..', 'assets', 'owm-logo.png');
 
 /**
  * Constructs the shared runtime context (secretStore, profile, toolSet)
@@ -54,6 +57,8 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
   };
   const catalogEventLog = new InMemoryCatalogEventLog({ startSeq: catalog.lastSeq });
   const jobStore = new JobStore(path.join(stateRoot, 'jobs.json'));
+  const invoiceCounter = new InvoiceCounter(path.join(stateRoot, 'invoice-counter.json'));
+  const invoiceLogoBuffer = fs.existsSync(INVOICE_LOGO_PATH) ? fs.readFileSync(INVOICE_LOGO_PATH) : null;
 
   const toolSet = buildToolSet({
     secretStore,
@@ -66,6 +71,8 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     catalogEventLog,
     persistCatalogSnapshot,
     jobStore,
+    invoiceCounter,
+    invoiceLogoBuffer,
   });
 
   return { secretStore, sharedSecretStore, profile, toolSet, channel, catalog, jobStore, stateRoot, instanceId: profileData.instanceId };
