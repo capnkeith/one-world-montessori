@@ -27,6 +27,7 @@
   "homepage": "https://github.com/capnkeith/OWM#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "@google-cloud/firestore": "^8.7.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@napi-rs/canvas": "0.1.80",
     "cfb": "^1.2.2",
