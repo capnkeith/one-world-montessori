@@ -28,7 +28,7 @@ test('echo demonstrates nested version lineage through doctor', async () => {
   assert.deepStrictEqual(versionLineage, [{ tool: 'echo', version: '1.0.0' }]);
   assert.deepStrictEqual(result.nested.versionLineage, [
     { tool: 'echo', version: '1.0.0' },
-    { tool: 'doctor', version: '1.0.0' },
+    { tool: 'doctor', version: '1.1.0' },
   ]);
 });
 

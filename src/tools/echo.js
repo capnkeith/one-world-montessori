@@ -7,7 +7,7 @@ const { Tool } = require('../core/Tool');
 /**
  * A null/sample tool. Its only real job is to prove the pattern: it calls
  * doctor internally via ctx.call(), so its result's nested.versionLineage
- * shows the full name@version chain (echo@1.0.0 -> doctor@1.0.0) rather
+ * shows the full name@version chain (echo@1.0.0 -> doctor@1.1.0) rather
  * than just the top-level call. Replace this with real Google Workspace
  * tools once those are scoped.
  */
@@ -33,7 +33,7 @@ function createEchoTool({ getDoctorTool }) {
       assert.deepStrictEqual(versionLineage, [{ tool: 'echo', version: '1.0.0' }]);
       assert.deepStrictEqual(result.nested.versionLineage, [
         { tool: 'echo', version: '1.0.0' },
-        { tool: 'doctor', version: '1.0.0' },
+        { tool: 'doctor', version: '1.1.0' },
       ]);
       return { passed: true };
     },

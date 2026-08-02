@@ -236,7 +236,16 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $totalSteps = 5
 
 try {
-  # --- Step 1: make sure Node.js is available ---------------------------
+  # --- Step 1: make sure Node.js and Git are available -------------------
+  # Git is needed for two things beyond this first install: the self-check
+  # test suite (bootstrap/install.js runs the full suite before promoting,
+  # and a couple of its tests shell out to git/ssh-keygen to prove the
+  # commit-signature verification logic works), and every future auto-update
+  # (check-for-update.js re-clones via git on every login). A machine
+  # missing git can still pass this very first install (it downloads a
+  # plain zip, not a git clone) but would then be stuck unable to ever
+  # auto-update - installing it here up front avoids that trap, the same
+  # way Node.js already gets installed automatically if it's missing.
   Write-Step 1 $totalSteps 'Checking requirements...'
   Refresh-Path
   $node = Get-Command node -ErrorAction SilentlyContinue
@@ -248,6 +257,17 @@ try {
     $node = Get-Command node -ErrorAction SilentlyContinue
     if (-not $node) {
       Fail-Friendly 'Node.js could not be installed automatically.' $wingetLog
+    }
+  }
+  $git = Get-Command git -ErrorAction SilentlyContinue
+  if (-not $git) {
+    Write-Host '      Git is not installed yet - installing it now (one time only)...'
+    $wingetLogGit = Join-Path $LogDir 'winget-git.log'
+    & winget install --id Git.Git -e --silent --accept-package-agreements --accept-source-agreements *> $wingetLogGit
+    Refresh-Path
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) {
+      Fail-Friendly 'Git could not be installed automatically.' $wingetLogGit
     }
   }
   Write-Done 'Requirements OK.'
