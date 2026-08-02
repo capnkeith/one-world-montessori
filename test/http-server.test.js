@@ -30,6 +30,11 @@ test('GET /tools lists registered tools; POST /tools/:name/invoke calls them', a
     const listRes = await fetch(`${base}/tools`);
     const tools = await listRes.json();
     assert.ok(tools.some((t) => t.name === 'doctor'));
+    // Chrome's Private Network Access blocks a public HTTPS page (the
+    // GitHub Pages landing page) from fetching this private/local address
+    // without this header — without it, the landing page's "is OWM Drive
+    // already running?" probe silently fails even when it's up.
+    assert.strictEqual(listRes.headers.get('access-control-allow-private-network'), 'true');
 
     const invokeRes = await fetch(`${base}/tools/echo/invoke`, {
       method: 'POST',

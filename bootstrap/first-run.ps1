@@ -186,6 +186,42 @@ Write-Host '=================================================='
 Write-Host '  OWM Drive - first-time setup'
 Write-Host '=================================================='
 
+function Test-AppResponding {
+  try {
+    $null = Invoke-WebRequest -Uri "$($AppUrl)tools" -UseBasicParsing -TimeoutSec 2
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+# Already installed? Don't run the whole setup flow again just because
+# this script got run a second time (e.g. a stale "not installed yet"
+# check on the landing page) - get the existing install running and open
+# it. Only falls through to a full (re)install if it's genuinely missing
+# or can't be started.
+if (Test-Path $CurrentLink) {
+  Write-Host ''
+  Write-Host 'OWM Drive is already installed on this computer.'
+  if (-not (Test-AppResponding)) {
+    Write-Host 'Starting it...'
+    Refresh-Path
+    $node = Get-Command node -ErrorAction SilentlyContinue
+    if ($node) {
+      $supervisorScript = Join-Path $CurrentLink 'bootstrap\supervisor.js'
+      Start-Process -FilePath $node.Source -ArgumentList "`"$supervisorScript`"" -WindowStyle Hidden
+      for ($i = 0; $i -lt 10 -and -not (Test-AppResponding); $i++) { Start-Sleep -Milliseconds 500 }
+    }
+  }
+  if (Test-AppResponding) {
+    Write-Host 'Opening it now...'
+    Start-Process $AppUrl
+    Wait-KeyOrTimeout 5 'Closing this window'
+    exit 0
+  }
+  Write-Host 'It is installed but not responding - running setup again to fix it.' -ForegroundColor Yellow
+}
+
 if (Test-SmartAppControlBlocking) {
   Resolve-SmartAppControlBlock
   # Resolve-SmartAppControlBlock always exits (abort, failure, or reboot) - never returns.
@@ -328,6 +364,20 @@ try {
     Write-Done "OWM Drive will now start automatically whenever you log in ($autoStartMethod)."
   } else {
     Write-Host '      Could not set up auto-start on this computer - you will need to launch OWM Drive yourself each time. Please tell Seth.' -ForegroundColor Yellow
+  }
+
+  # A plain .url file (not .lnk) - simplest reliable way to make a
+  # double-clickable link to a running URL, no COM shortcut object needed.
+  # Non-fatal if this fails: the app itself is already installed either way.
+  try {
+    $shortcutContent = "[InternetShortcut]`r`nURL=$AppUrl`r`n"
+    $desktopShortcut = Join-Path ([System.Environment]::GetFolderPath('Desktop')) 'OWM Drive.url'
+    Set-Content -Path $desktopShortcut -Value $shortcutContent -Encoding ASCII
+    $startMenuShortcut = Join-Path ([System.Environment]::GetFolderPath('StartMenu')) 'Programs\OWM Drive.url'
+    Set-Content -Path $startMenuShortcut -Value $shortcutContent -Encoding ASCII
+    Write-Done 'Added an "OWM Drive" shortcut to your Desktop and Start Menu.'
+  } catch {
+    Write-Host '      Could not add a Desktop/Start Menu shortcut - not a problem, OWM Drive is still installed and running.' -ForegroundColor Yellow
   }
 
   # --- Step 5: launch --------------------------------------------------------

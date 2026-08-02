@@ -92,6 +92,12 @@ function startServer({
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    // Chrome's Private Network Access blocks a public HTTPS page (the
+    // GitHub Pages landing page) from fetching a private/local address
+    // (127.0.0.1) without this — without it, the landing page's "is OWM
+    // Drive already running?" probe silently fails even when it's up,
+    // always falling through to "isn't installed yet".
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
