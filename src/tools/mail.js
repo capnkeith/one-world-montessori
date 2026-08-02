@@ -42,6 +42,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       query: z.string().optional(),
       maxResults: z.number().optional(),
       id: z.string().optional(),
+      threadId: z.string().optional(),
     },
 
     run: async (params) => {
@@ -65,7 +66,8 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
           }),
           'utf8'
         ).toString('base64url');
-        const res = await cachedClient.users.messages.send({ userId: 'me', requestBody: { raw } });
+        const requestBody = params.threadId ? { raw, threadId: params.threadId } : { raw };
+        const res = await cachedClient.users.messages.send({ userId: 'me', requestBody });
         return { sent: true, id: res.data.id, threadId: res.data.threadId };
       }
 
@@ -104,11 +106,13 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
           },
         },
       };
+      const sendRequestBodies = [];
       const fakeClient = {
         users: {
           messages: {
             send: async ({ requestBody }) => {
               sentRawMessages.push(requestBody.raw);
+              sendRequestBodies.push(requestBody);
               return { data: { id: 'sent-1', threadId: 'thread-1' } };
             },
             list: async () => ({ data: { messages: [{ id: 'msg-1', threadId: 'thread-1' }] } }),
@@ -135,6 +139,17 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       const decodedRaw = Buffer.from(sentRawMessages[0], 'base64url').toString('utf8');
       assert.match(decodedRaw, /Content-Disposition: attachment; filename="invoice\.pdf"/);
       assert.match(decodedRaw, /To: businessmanager@oneworldmontessori\.org/);
+      assert.strictEqual(sendRequestBodies[0].threadId, undefined, 'no threadId means a fresh message, not a reply');
+
+      const reply = await fakeTool.invoke({
+        action: 'send',
+        to: 'businessmanager@oneworldmontessori.org',
+        subject: 'Re: Monthly invoice',
+        text: 'Following up.',
+        threadId: 'thread-1',
+      });
+      assert.strictEqual(reply.result.sent, true);
+      assert.strictEqual(sendRequestBodies[1].threadId, 'thread-1', 'a reply must be sent into the existing thread');
 
       const listed = await fakeTool.invoke({ action: 'listMessages', query: 'is:unread' });
       assert.strictEqual(listed.result.messages.length, 1);
