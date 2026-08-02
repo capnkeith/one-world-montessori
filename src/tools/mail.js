@@ -32,6 +32,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
     mcpInputSchema: {
       action: z.enum(['send', 'listMessages', 'getMessage']).optional(),
       to: z.string().optional(),
+      cc: z.union([z.string(), z.array(z.string())]).optional(),
       subject: z.string().optional(),
       text: z.string().optional(),
       html: z.string().optional(),
@@ -56,6 +57,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         const raw = Buffer.from(
           buildMimeMessage({
             to: params.to,
+            cc: params.cc,
             subject: params.subject,
             text: params.text,
             html: params.html,

@@ -52,6 +52,19 @@ test('multiple attachments each get their own part', () => {
   assert.match(raw, /filename="two\.png"/);
 });
 
+test('cc accepts a single address or an array, joined with commas', () => {
+  const single = buildMimeMessage({ to: 'a@b.com', cc: 'c@d.com', subject: 'Hi', text: 'body' });
+  assert.match(single, /^Cc: c@d\.com$/m);
+
+  const multiple = buildMimeMessage({ to: 'a@b.com', cc: ['c@d.com', 'e@f.com'], subject: 'Hi', text: 'body' });
+  assert.match(multiple, /^Cc: c@d\.com, e@f\.com$/m);
+});
+
+test('omitting cc leaves no Cc header at all', () => {
+  const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'body' });
+  assert.doesNotMatch(raw, /^Cc:/m);
+});
+
 test('a custom boundary is used verbatim instead of a random one, for deterministic output', () => {
   const raw = buildMimeMessage({
     to: 'a@b.com',

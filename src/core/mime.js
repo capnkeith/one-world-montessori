@@ -7,8 +7,10 @@
  * library, this is a small enough format to hand-roll and keep
  * dependency-free.
  */
-function buildMimeMessage({ to, subject, text, html, attachments = [], boundary = defaultBoundary() }) {
-  const lines = [`To: ${to}`, `Subject: ${subject}`, 'MIME-Version: 1.0'];
+function buildMimeMessage({ to, cc, subject, text, html, attachments = [], boundary = defaultBoundary() }) {
+  const lines = [`To: ${to}`];
+  if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
+  lines.push(`Subject: ${subject}`, 'MIME-Version: 1.0');
   const hasAttachments = attachments.length > 0;
   const hasBothBodies = Boolean(text) && Boolean(html);
 
