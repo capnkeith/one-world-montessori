@@ -11,17 +11,24 @@ const crypto = require('crypto');
  * call time, so adding a new kind of job never requires changing this
  * file.
  *
- * Job shape: { id, type, label, schedule, params, status, createdAt,
- * nextRunAt, lastRunAt, history: [{ranAt, status, detail|error, feedback?}] }
+ * Job shape: { id, type, label, schedule, params, attachments, status,
+ * createdAt, nextRunAt, lastRunAt, history: [{ranAt, status, detail|error, feedback?}] }
  * `status` is 'scheduled' | 'cancelled' | 'completed' (one-off jobs only,
  * once they've run).
+ *
+ * `attachments` (files pre-staged for a job type that emails something,
+ * e.g. send-monthly-invoice-email) is fixed once at addJob time and is
+ * deliberately not one of the fields updateJob can touch — see updateJob's
+ * comment. This is the DLP guardrail: a job can only ever email what it
+ * was created with (plus whatever a rendering tool builds fresh at run
+ * time, e.g. the invoice PDF), never something added or fetched later.
  */
 class Scheduler {
   constructor({ store }) {
     this.store = store;
   }
 
-  addJob({ type, label, schedule, params = {}, now = new Date() }) {
+  addJob({ type, label, schedule, params = {}, attachments = [], now = new Date() }) {
     if (!type) throw new Error('addJob requires a type');
     if (!schedule) throw new Error('addJob requires a schedule');
     const nextRunAt = computeNextRun(schedule, now);
@@ -32,6 +39,7 @@ class Scheduler {
       label: label ?? type,
       schedule,
       params,
+      attachments,
       status: 'scheduled',
       createdAt: now.toISOString(),
       nextRunAt: nextRunAt.toISOString(),
@@ -52,7 +60,16 @@ class Scheduler {
     return this.store.load().find((j) => j.id === id) ?? null;
   }
 
-  /** Merges a patch (label/schedule/params) into an existing job; recomputes nextRunAt if the schedule changed. */
+  /**
+   * Merges a patch (label/schedule/params) into an existing job; recomputes
+   * nextRunAt if the schedule changed. Deliberately never touches `type` or
+   * `attachments`, even if present on `patch` — those are fixed at addJob
+   * time. This is what lets an automated reply-handling agent (Claude, via
+   * the `claude` tool's update_job_params) freely correct recipients/cc/
+   * subject/body without ever being able to redirect a job into attaching
+   * something it wasn't created with, or turning it into a different kind
+   * of job entirely.
+   */
   updateJob(id, patch, { now = new Date() } = {}) {
     const jobs = this.store.load();
     const job = jobs.find((j) => j.id === id);

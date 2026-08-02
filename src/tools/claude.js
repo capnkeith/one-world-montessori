@@ -109,6 +109,15 @@ async function runClaudeQuery({ client, query, driveTool, channelTool, ctx }) {
  * respond_with_text — this is what makes "type whatever you want in the
  * reply" (Seth's design for the dispute-resolution loop) actually
  * produce something the scheduler's recordFeedback can store.
+ *
+ * DLP guardrail (Seth, explicit): this function deliberately takes no
+ * driveTool at all — Claude resolving an email reply can adjust a job's
+ * own params (recipient/cc/subject/body/line items, via update_job_params)
+ * or escalate to Seth by email (escalate_to_seth, subject+body text only,
+ * no attachment capability), but must never be able to browse/search Drive
+ * and pull something new into the picture. If a future change ever wants
+ * to give this path Drive access for some other reason, that access must
+ * not be combined with mail-sending tools in the same tool-runner scope.
  */
 async function runInterpretReply({ client, replyText, context, schedulerTool, mailTool, ctx }) {
   const { betaZodTool } = require('@anthropic-ai/sdk/helpers/beta/zod');
@@ -129,10 +138,16 @@ async function runInterpretReply({ client, replyText, context, schedulerTool, ma
           paramChanges: z.record(z.any()).describe('Only the job.params fields that need to change, e.g. {"to": "correct@email.com"}'),
         }),
         run: async ({ paramChanges }) => {
+          // Flat { action, id, params }, matching the real scheduler tool's
+          // updateJob contract exactly (src/tools/scheduler.js) — it never
+          // reads a `type` or `attachments` field even if one were sent, so
+          // this can only ever adjust the job's own params (recipient, cc,
+          // subject, body, line items, ...), never redirect what it attaches
+          // or turn it into a different kind of job.
           await ctx.call(schedulerTool, {
             action: 'updateJob',
             id: context.jobId,
-            patch: { params: { ...(context.jobParams ?? {}), ...paramChanges } },
+            params: { ...(context.jobParams ?? {}), ...paramChanges },
           });
           return 'Job params updated.';
         },
@@ -148,6 +163,9 @@ async function runInterpretReply({ client, replyText, context, schedulerTool, ma
         name: 'escalate_to_seth',
         description:
           'Email Seth directly when you cannot confidently resolve this reply yourself — anything ambiguous, a real dispute, or a question needing human judgment.',
+        // subject/body text only, deliberately no attachments field — this
+        // is the DLP guardrail: Claude's escalation path can never attach
+        // anything to an outbound email, full stop.
         inputSchema: z.object({ subject: z.string(), body: z.string() }),
         run: async ({ subject, body }) => {
           await ctx.call(mailTool, { action: 'send', to: 'seth@oneworldmontessori.org', subject, text: body });
@@ -322,8 +340,13 @@ async function claudeInternalTest() {
   assert.strictEqual(updateJobCalls.length, 1);
   assert.strictEqual(updateJobCalls[0].action, 'updateJob');
   assert.strictEqual(updateJobCalls[0].id, 'job-42');
-  // Merges the fix into the existing params rather than replacing them outright.
-  assert.deepStrictEqual(updateJobCalls[0].patch.params, { to: 'corrected@example.com', amount: 16 });
+  // Flat { action, id, params } — matches the real scheduler tool's
+  // updateJob contract; a wrapping { patch: {...} } would silently no-op
+  // against the real tool, which only reads params.params directly.
+  assert.deepStrictEqual(updateJobCalls[0].params, { to: 'corrected@example.com', amount: 16 });
+  assert.strictEqual(updateJobCalls[0].patch, undefined);
+  assert.strictEqual(updateJobCalls[0].attachments, undefined, 'update_job_params must never be able to set attachments');
+  assert.strictEqual(updateJobCalls[0].type, undefined, 'update_job_params must never be able to change the job type');
 
   const escalated = await tool.invoke({
     action: 'interpretReply',

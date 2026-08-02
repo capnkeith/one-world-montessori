@@ -77,7 +77,31 @@ function extractMessage(data) {
  * outbound half of a job like send-monthly-invoice-email;
  * `listMessages`/`getMessage` cover reading replies back, e.g. so a
  * dispute-resolution flow can find and interpret what came back.
+ *
+ * DLP guardrail (Seth, explicit requirement): no OWM Drive content may
+ * ever leave via email. Every attachment passed to `send` must declare a
+ * `source` of either 'rendered' (bytes a rendering tool — pdf/invoice —
+ * built fresh from structured params, never fetched from Drive) or
+ * 'job-defined' (bytes fixed on the job itself when it was created, see
+ * Scheduler.addJob — never something a handler decided to fetch at run
+ * time, and never patchable afterward via updateJob). Anything else,
+ * including a missing source, is rejected here — this is the one choke
+ * point every attachment-carrying send passes through, so the check lives
+ * here rather than trusting each caller to have tagged things correctly.
  */
+const ALLOWED_ATTACHMENT_SOURCES = new Set(['rendered', 'job-defined']);
+
+function assertAttachmentsAllowed(attachments) {
+  for (const attachment of attachments ?? []) {
+    if (!ALLOWED_ATTACHMENT_SOURCES.has(attachment.source)) {
+      throw new Error(
+        `Refusing to send attachment "${attachment.filename}": source must be 'rendered' or 'job-defined', got ${JSON.stringify(
+          attachment.source
+        )}. Live Drive content may never be attached to an outbound email.`
+      );
+    }
+  }
+}
 function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
   let cachedClient = null;
 
@@ -93,7 +117,14 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       text: z.string().optional(),
       html: z.string().optional(),
       attachments: z
-        .array(z.object({ filename: z.string(), mimeType: z.string(), contentBase64: z.string() }))
+        .array(
+          z.object({
+            filename: z.string(),
+            mimeType: z.string(),
+            contentBase64: z.string(),
+            source: z.enum(['rendered', 'job-defined']),
+          })
+        )
         .optional(),
       query: z.string().optional(),
       maxResults: z.number().optional(),
@@ -111,6 +142,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       if (action === 'send') {
         if (!params.to) throw new Error('send requires to');
         if (!params.subject) throw new Error('send requires subject');
+        assertAttachmentsAllowed(params.attachments);
         const raw = Buffer.from(
           buildMimeMessage({
             to: params.to,
@@ -235,7 +267,12 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         subject: 'Monthly invoice',
         text: 'See attached.',
         attachments: [
-          { filename: 'invoice.pdf', mimeType: 'application/pdf', contentBase64: Buffer.from('fake pdf bytes').toString('base64') },
+          {
+            filename: 'invoice.pdf',
+            mimeType: 'application/pdf',
+            contentBase64: Buffer.from('fake pdf bytes').toString('base64'),
+            source: 'rendered',
+          },
         ],
       });
       assert.strictEqual(sent.result.sent, true);
@@ -283,6 +320,42 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         /Approved.*thanks/,
         'must fall back to text/html with tags stripped when no text/plain part exists anywhere'
       );
+
+      // DLP guardrail: send must refuse any attachment that isn't tagged as
+      // either rendered (built fresh by a rendering tool) or job-defined
+      // (fixed on the job at creation) — this is the one enforcement point
+      // every attachment-carrying send passes through.
+      await assert.rejects(
+        () =>
+          fakeTool.invoke({
+            action: 'send',
+            to: 'a@b.com',
+            subject: 'No source tag',
+            attachments: [{ filename: 'x.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }],
+          }),
+        /Refusing to send attachment/,
+        'an attachment with no source tag must be rejected'
+      );
+
+      await assert.rejects(
+        () =>
+          fakeTool.invoke({
+            action: 'send',
+            to: 'a@b.com',
+            subject: 'Drive-sourced attachment',
+            attachments: [{ filename: 'x.pdf', mimeType: 'application/pdf', contentBase64: 'abc', source: 'drive' }],
+          }),
+        /Refusing to send attachment/,
+        'an attachment claiming to come straight from Drive must be rejected, not just an untagged one'
+      );
+
+      const jobDefinedSend = await fakeTool.invoke({
+        action: 'send',
+        to: 'a@b.com',
+        subject: 'Job-defined attachment',
+        attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc', source: 'job-defined' }],
+      });
+      assert.strictEqual(jobDefinedSend.result.sent, true, 'job-defined attachments are allowed through');
 
       return { passed: true };
     },

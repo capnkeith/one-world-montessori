@@ -48,6 +48,47 @@ test('send-monthly-invoice-email builds an invoice via the invoice tool and emai
   assert.strictEqual(sentParams[0].attachments.length, 1);
   assert.strictEqual(sentParams[0].attachments[0].filename, 'OWM-INV-000001.pdf');
   assert.strictEqual(sentParams[0].attachments[0].mimeType, 'application/pdf');
+  assert.strictEqual(
+    sentParams[0].attachments[0].source,
+    'rendered',
+    'the invoice tool built this fresh from structured params, never from Drive — mail.js requires this tag'
+  );
+});
+
+test('DLP guardrail: job-defined attachments (fixed on the job at creation) are forwarded and tagged job-defined', async () => {
+  const sentParams = [];
+  const fakeMailTool = {
+    invoke: async (params) => {
+      sentParams.push(params);
+      return { result: { sent: true } };
+    },
+  };
+  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+
+  const job = {
+    id: 'job-1',
+    attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }],
+  };
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' }, job);
+
+  assert.strictEqual(sentParams[0].attachments.length, 2, 'rendered invoice plus the job-defined attachment');
+  const jobDefined = sentParams[0].attachments.find((a) => a.filename === 'contract.pdf');
+  assert.ok(jobDefined);
+  assert.strictEqual(jobDefined.source, 'job-defined');
+});
+
+test('with no job argument at all (real-world runJob always passes one), job-defined attachments default to none', async () => {
+  const sentParams = [];
+  const fakeMailTool = {
+    invoke: async (params) => {
+      sentParams.push(params);
+      return { result: { sent: true } };
+    },
+  };
+  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
+  assert.strictEqual(sentParams[0].attachments.length, 1, 'just the rendered invoice, no job-defined attachments to forward');
 });
 
 test('always cc\'s Seth, merging with whatever cc list a job already has', async () => {

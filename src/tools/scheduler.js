@@ -26,6 +26,9 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
       label: z.string().optional(),
       schedule: z.any().optional(),
       params: z.any().optional(),
+      attachments: z
+        .array(z.object({ filename: z.string(), mimeType: z.string(), contentBase64: z.string() }))
+        .optional(),
       id: z.string().optional(),
       runIndex: z.number().optional(),
       feedback: z.any().optional(),
@@ -41,6 +44,7 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
             label: params.label,
             schedule: params.schedule,
             params: params.params,
+            attachments: params.attachments,
           });
 
         case 'listJobs':
@@ -54,6 +58,9 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
         }
 
         case 'updateJob':
+          // Deliberately never forwards `attachments` (or `type`) — a
+          // job's email attachments are fixed at addJob time; see
+          // Scheduler.updateJob's doc comment for why.
           if (!params.id) throw new Error('updateJob requires id');
           return scheduler.updateJob(params.id, {
             label: params.label,

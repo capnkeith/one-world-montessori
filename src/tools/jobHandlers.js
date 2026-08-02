@@ -23,13 +23,24 @@ function withStandingCc(cc) {
  */
 function buildJobHandlers({ getMailTool, getInvoiceTool }) {
   return {
-    'send-monthly-invoice-email': async (params) => {
+    // `job` (the full job record, not just its params) is the second arg
+    // Scheduler.runJob passes every handler — used here only to read
+    // job.attachments, the pre-staged files fixed on the job at creation
+    // time (see Scheduler.addJob). Never read anything else off `job` that
+    // could vary at run time (e.g. don't go fetch something new based on
+    // job.type) — mail.js's own guardrail rejects anything not tagged
+    // 'rendered' or 'job-defined', but the discipline starts here: this is
+    // the only place that decides what an email attaches, and it may only
+    // ever draw from the invoice tool's fresh output or job.attachments.
+    'send-monthly-invoice-email': async (params, job) => {
       const invoiceTool = getInvoiceTool();
       const { result: invoiceResult } = await invoiceTool.invoke({
         action: 'build',
         billTo: params?.billTo,
         lineItems: params?.lineItems,
       });
+
+      const jobDefinedAttachments = (job?.attachments ?? []).map((a) => ({ ...a, source: 'job-defined' }));
 
       const mailTool = getMailTool();
       const { result } = await mailTool.invoke({
@@ -41,7 +52,13 @@ function buildJobHandlers({ getMailTool, getInvoiceTool }) {
           params?.text ??
           `Hi,\n\nAttached is invoice ${invoiceResult.invoiceNumber}, generated automatically by the OWM Claude tools platform.\n\nBest,\nClaude`,
         attachments: [
-          { filename: invoiceResult.filename, mimeType: invoiceResult.mimeType, contentBase64: invoiceResult.contentBase64 },
+          {
+            filename: invoiceResult.filename,
+            mimeType: invoiceResult.mimeType,
+            contentBase64: invoiceResult.contentBase64,
+            source: 'rendered',
+          },
+          ...jobDefinedAttachments,
         ],
       });
       return { ...result, invoiceNumber: invoiceResult.invoiceNumber };

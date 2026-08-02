@@ -147,6 +147,44 @@ test('updateJob merges a patch into an existing job and recomputes nextRunAt onl
   assert.strictEqual(new Date(withNewSchedule.nextRunAt).getDate(), 15);
 });
 
+test('addJob fixes attachments at creation time, defaulting to none', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const withAttachments = scheduler.addJob({
+    type: 'send-contract-email',
+    schedule: { type: 'once', at: new Date(2026, 7, 2).toISOString() },
+    now: new Date(2026, 7, 1),
+    attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }],
+  });
+  assert.strictEqual(withAttachments.attachments.length, 1);
+  assert.strictEqual(withAttachments.attachments[0].filename, 'contract.pdf');
+
+  const withoutAttachments = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 2).toISOString() },
+    now: new Date(2026, 7, 1),
+  });
+  assert.deepStrictEqual(withoutAttachments.attachments, []);
+});
+
+test('updateJob DLP guardrail: cannot alter attachments or type, even if asked to', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'send-contract-email',
+    schedule: { type: 'once', at: new Date(2026, 7, 2).toISOString() },
+    now: new Date(2026, 7, 1),
+    attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }],
+  });
+
+  const updated = scheduler.updateJob(job.id, {
+    params: { to: 'new@example.com' },
+    attachments: [{ filename: 'sneaked-in.pdf', mimeType: 'application/pdf', contentBase64: 'xyz' }],
+    type: 'some-other-job-type',
+  });
+
+  assert.deepStrictEqual(updated.attachments, [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }]);
+  assert.strictEqual(updated.type, 'send-contract-email', 'a job can never be turned into a different job type via updateJob');
+});
+
 test('updateJob refuses to modify a cancelled job', () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const job = scheduler.addJob({
