@@ -37,9 +37,11 @@ function buildToolSet({
 }) {
   const toolSet = new ToolSet({ name: 'owm-tools', version: TOOLSET_VERSION, instanceId, displayName, secretStore });
 
-  // Assigned after creation below; doctor only reads it at invoke-time
-  // (via the closure), by which point buildToolSet has finished.
+  // Assigned after creation below; doctor/claude only read these at
+  // invoke-time (via the closure), by which point buildToolSet has finished.
   let channelTool;
+  let schedulerTool;
+  let mailTool;
 
   const doctorTool = createDoctorTool({
     toolSetRef: () => toolSet,
@@ -74,10 +76,12 @@ function buildToolSet({
     secretStore,
     getDriveTool: () => driveTool,
     getChannelTool: () => channelTool,
+    getSchedulerTool: () => schedulerTool,
+    getMailTool: () => mailTool,
   });
   toolSet.register(claudeTool);
 
-  const mailTool = createMailTool({ secretStore });
+  mailTool = createMailTool({ secretStore });
   toolSet.register(mailTool);
 
   const pdfTool = createPdfTool();
@@ -90,7 +94,7 @@ function buildToolSet({
   });
   toolSet.register(invoiceTool);
 
-  const schedulerTool = createSchedulerTool({
+  schedulerTool = createSchedulerTool({
     jobStore,
     handlers: buildJobHandlers({ getMailTool: () => mailTool, getInvoiceTool: () => invoiceTool }),
   });

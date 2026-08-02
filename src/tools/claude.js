@@ -110,16 +110,59 @@ async function runClaudeQuery({ client, query, driveTool, channelTool, ctx }) {
  * reply" (Seth's design for the dispute-resolution loop) actually
  * produce something the scheduler's recordFeedback can store.
  */
-async function runInterpretReply({ client, replyText, context }) {
+async function runInterpretReply({ client, replyText, context, schedulerTool, mailTool, ctx }) {
   const { betaZodTool } = require('@anthropic-ai/sdk/helpers/beta/zod');
 
   let resolution = null;
+  const tools = [];
+
+  // Real autonomy, not just a classification label: if the reply points
+  // out something fixable (wrong recipient, wrong amount, wrong content),
+  // Claude corrects the job itself instead of just flagging it for a human.
+  if (schedulerTool && context?.jobId) {
+    tools.push(
+      betaZodTool({
+        name: 'update_job_params',
+        description:
+          "Correct this job's stored params based on what the reply said — e.g. fix a wrong recipient email, wrong amount, wrong content. Only include the fields that need to change; everything else is left as-is.",
+        inputSchema: z.object({
+          paramChanges: z.record(z.any()).describe('Only the job.params fields that need to change, e.g. {"to": "correct@email.com"}'),
+        }),
+        run: async ({ paramChanges }) => {
+          await ctx.call(schedulerTool, {
+            action: 'updateJob',
+            id: context.jobId,
+            patch: { params: { ...(context.jobParams ?? {}), ...paramChanges } },
+          });
+          return 'Job params updated.';
+        },
+      })
+    );
+  }
+
+  // The escape hatch for anything that isn't a confident, unambiguous fix —
+  // real human judgment beats a guess that could send something else wrong.
+  if (mailTool) {
+    tools.push(
+      betaZodTool({
+        name: 'escalate_to_seth',
+        description:
+          'Email Seth directly when you cannot confidently resolve this reply yourself — anything ambiguous, a real dispute, or a question needing human judgment.',
+        inputSchema: z.object({ subject: z.string(), body: z.string() }),
+        run: async ({ subject, body }) => {
+          await ctx.call(mailTool, { action: 'send', to: 'seth@oneworldmontessori.org', subject, text: body });
+          return 'Escalated to Seth.';
+        },
+      })
+    );
+  }
 
   const recordResolution = betaZodTool({
     name: 'record_resolution',
-    description: 'Record your resolution of this reply. Call exactly once, as your last action.',
+    description:
+      'Record your final resolution of this reply. Call exactly once, as your last action, after taking whatever update_job_params/escalate_to_seth actions were actually needed (if any).',
     inputSchema: z.object({
-      outcome: z.enum(['approved', 'disputed', 'unclear']),
+      outcome: z.enum(['approved', 'updated', 'escalated', 'unclear']),
       note: z.string().describe('Brief explanation of your reasoning, referencing what the reply actually said'),
     }),
     run: async (input) => {
@@ -127,16 +170,20 @@ async function runInterpretReply({ client, replyText, context }) {
       return 'Recorded.';
     },
   });
+  tools.push(recordResolution);
 
   const runner = client.beta.messages.toolRunner({
     model: 'claude-opus-5',
     max_tokens: 1024,
     system:
       'You are resolving a reply to an automated task email on behalf of One World Montessori. ' +
-      "You'll be given context about what was originally sent and the text of a reply that came back. " +
-      'Decide whether the reply approves the task, disputes/objects to it, or is unclear, and briefly ' +
-      'explain why using what the reply actually said. You MUST call record_resolution exactly once.',
-    tools: [recordResolution],
+      "You'll be given context about what was originally sent (including the job's current params) and the text of a reply that came back. " +
+      'If the reply confirms everything is correct, just record that as "approved". If the reply points out a ' +
+      'specific, unambiguous correction you can make yourself, call update_job_params to fix it, then record ' +
+      '"updated". If you cannot confidently resolve this on your own — anything ambiguous, a real dispute, or ' +
+      'a question needing human judgment — call escalate_to_seth instead of guessing, then record "escalated". ' +
+      'You MUST call record_resolution exactly once, as your last action.',
+    tools,
     messages: [
       {
         role: 'user',
@@ -188,8 +235,15 @@ function fakeToolRunner(opts) {
     const findTool = (name) => opts.tools.find((t) => t.name === name);
     const recordResolution = findTool('record_resolution');
     if (recordResolution) {
-      const outcome = /approve|looks correct|thank you/i.test(query) ? 'approved' : 'disputed';
-      await recordResolution.run({ outcome, note: 'Fake resolution based on reply text.' });
+      if (/approve|looks correct|thank you/i.test(query)) {
+        await recordResolution.run({ outcome: 'approved', note: 'Fake resolution based on reply text.' });
+      } else if (/wrong email|wrong address/i.test(query)) {
+        await findTool('update_job_params').run({ paramChanges: { to: 'corrected@example.com' } });
+        await recordResolution.run({ outcome: 'updated', note: 'Fixed the recipient per the reply.' });
+      } else {
+        await findTool('escalate_to_seth').run({ subject: 'Needs your attention', body: 'Fake escalation body.' });
+        await recordResolution.run({ outcome: 'escalated', note: 'Could not confidently resolve this myself.' });
+      }
       return;
     }
     if (/folder|drive|file/i.test(query)) {
@@ -213,11 +267,27 @@ async function claudeInternalTest() {
   const secretStore = fakeSecretStore();
   const driveTool = fakeDriveToolStub();
   const channelTool = fakeChannelToolStub();
+  const updateJobCalls = [];
+  const mailSendCalls = [];
+  const schedulerTool = {
+    invoke: async (params) => {
+      updateJobCalls.push(params);
+      return { result: { ...params }, versionLineage: [] };
+    },
+  };
+  const mailTool = {
+    invoke: async (params) => {
+      mailSendCalls.push(params);
+      return { result: { sent: true }, versionLineage: [] };
+    },
+  };
 
   const tool = createClaudeTool({
     secretStore,
     getDriveTool: () => driveTool,
     getChannelTool: () => channelTool,
+    getSchedulerTool: () => schedulerTool,
+    getMailTool: () => mailTool,
     anthropicClientFactory: () => ({ beta: { messages: { toolRunner: fakeToolRunner } } }),
   });
 
@@ -240,6 +310,30 @@ async function claudeInternalTest() {
   });
   assert.strictEqual(resolution.result.outcome, 'approved');
   assert.strictEqual(typeof resolution.result.note, 'string');
+  assert.strictEqual(updateJobCalls.length, 0, 'approved should never touch the job');
+  assert.strictEqual(mailSendCalls.length, 0, 'approved should never email Seth');
+
+  const fixed = await tool.invoke({
+    action: 'interpretReply',
+    replyText: 'This has the wrong email, it should go to someone else.',
+    context: { jobId: 'job-42', jobLabel: 'Monthly invoice', jobParams: { to: 'wrong@example.com', amount: 16 } },
+  });
+  assert.strictEqual(fixed.result.outcome, 'updated');
+  assert.strictEqual(updateJobCalls.length, 1);
+  assert.strictEqual(updateJobCalls[0].action, 'updateJob');
+  assert.strictEqual(updateJobCalls[0].id, 'job-42');
+  // Merges the fix into the existing params rather than replacing them outright.
+  assert.deepStrictEqual(updateJobCalls[0].patch.params, { to: 'corrected@example.com', amount: 16 });
+
+  const escalated = await tool.invoke({
+    action: 'interpretReply',
+    replyText: 'Why am I getting this? This makes no sense.',
+    context: { jobId: 'job-42', jobLabel: 'Monthly invoice', jobParams: {} },
+  });
+  assert.strictEqual(escalated.result.outcome, 'escalated');
+  assert.strictEqual(mailSendCalls.length, 1);
+  assert.strictEqual(mailSendCalls[0].to, 'seth@oneworldmontessori.org');
+  assert.ok(mailSendCalls[0].subject);
 
   const unconfigured = createClaudeTool({
     secretStore: fakeSecretStore(),
@@ -255,11 +349,19 @@ async function claudeInternalTest() {
   return { passed: true };
 }
 
-function createClaudeTool({ secretStore, getDriveTool, getChannelTool, anthropicClientFactory = defaultAnthropicClientFactory }) {
+function createClaudeTool({
+  secretStore,
+  getDriveTool,
+  getChannelTool,
+  getSchedulerTool,
+  getMailTool,
+  anthropicClientFactory = defaultAnthropicClientFactory,
+}) {
   return new Tool({
     name: 'claude',
-    version: '1.1.0',
-    description: "Ask Claude a question; Claude can browse/search this account's Drive and list online peers to answer.",
+    version: '1.2.0',
+    description:
+      "Ask Claude a question; Claude can browse/search this account's Drive, list online peers, and (via interpretReply) act on email replies to scheduled jobs.",
     mcpInputSchema: {
       action: z.enum(['setup', 'query', 'interpretReply']).optional(),
       apiKey: z.string().optional(),
@@ -298,7 +400,14 @@ function createClaudeTool({ secretStore, getDriveTool, getChannelTool, anthropic
           throw new Error('Anthropic API key not configured — run `claude setup` first');
         }
         const client = anthropicClientFactory({ apiKey: secretStore.get('anthropic_api_key') });
-        return runInterpretReply({ client, replyText: params.replyText, context: params.context });
+        return runInterpretReply({
+          client,
+          replyText: params.replyText,
+          context: params.context,
+          schedulerTool: getSchedulerTool ? getSchedulerTool() : null,
+          mailTool: getMailTool ? getMailTool() : null,
+          ctx,
+        });
       }
 
       throw new Error(`Unknown claude action: ${action}`);

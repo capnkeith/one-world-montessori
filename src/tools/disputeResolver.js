@@ -5,12 +5,20 @@ const { z } = require('zod');
 const { Tool } = require('../core/Tool');
 
 /**
- * Closes the loop Seth designed for send-monthly-invoice-email (and any
- * future job type that emails someone and expects a reply): finds job
- * history entries with an unresolved Gmail thread, reads whatever came
- * back, has `claude`'s interpretReply turn free text into a structured
- * decision, and records it via `scheduler`'s recordFeedback. Nobody has
- * to click a fixed "approve" button - they can type whatever they want.
+ * The reusable recipe for "let Claude handle email" Seth asked for, not
+ * a one-off for send-monthly-invoice-email specifically: finds job history
+ * entries with an unresolved Gmail thread, reads whatever came back, and
+ * hands it to `claude`'s interpretReply — which now has real tool access
+ * (via ctx.call, same as any other agentic claude action) to fix the job
+ * itself (scheduler.updateJob) when the reply points out something
+ * unambiguous, or escalate straight to Seth by email (mail.send) when it
+ * can't confidently resolve things alone. This tool's own job is just:
+ * find unresolved replies, hand each to Claude, record whatever Claude
+ * decided via `scheduler`'s recordFeedback. Never does meaningful work
+ * (never calls Claude) when there's nothing new to check — cheap to poll
+ * often. Nobody has to click a fixed "approve" button - they can type
+ * whatever they want, and any future job type that emails someone and
+ * expects a reply gets this same handling for free.
  *
  * Deliberately its own tool rather than folded into scheduler.js or
  * mail.js: it depends on both of those plus claude, and none of the
@@ -19,8 +27,9 @@ const { Tool } = require('../core/Tool');
 function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeTool }) {
   return new Tool({
     name: 'disputeResolver',
-    version: '1.0.0',
-    description: "Reads replies to a job's sent email, has Claude interpret them, and records the resolution as feedback on that run.",
+    version: '1.1.0',
+    description:
+      "Reads replies to a job's sent email and has Claude resolve them — fixing the job itself when the reply is unambiguous, escalating to Seth by email otherwise — recording the outcome as feedback on that run.",
     mcpInputSchema: {
       action: z.enum(['checkReplies']).optional(),
     },
@@ -53,7 +62,7 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
           const { result: resolution } = await claudeTool.invoke({
             action: 'interpretReply',
             replyText: latestReply.body,
-            context: { jobLabel: job.label, jobType: job.type, jobParams: job.params },
+            context: { jobId: job.id, jobLabel: job.label, jobType: job.type, jobParams: job.params },
           });
 
           await schedulerTool.invoke({
@@ -112,6 +121,7 @@ function createDisputeResolverTool({ getSchedulerTool, getMailTool, getClaudeToo
         invoke: async (params) => {
           assert.strictEqual(params.action, 'interpretReply');
           assert.strictEqual(params.replyText, 'Looks correct, approved.');
+          assert.strictEqual(params.context.jobId, 'job-1', 'jobId must be passed through so interpretReply can act on the right job');
           return { result: { outcome: 'approved', note: 'Fake interpretation' } };
         },
       };
