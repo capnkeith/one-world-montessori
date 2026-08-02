@@ -10,6 +10,7 @@ const { Profile } = require('./core/Profile');
 const { InMemoryChannel } = require('./core/Channel');
 const { InMemoryCatalogEventLog } = require('./core/CatalogEventLog');
 const { FileCatalog } = require('./core/FileCatalog');
+const { JobStore } = require('./core/JobStore');
 const { buildToolSet } = require('./tools');
 const paths = require('./core/paths');
 
@@ -52,6 +53,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     fs.writeFileSync(catalogSnapshotPath, JSON.stringify(catalog.snapshot()));
   };
   const catalogEventLog = new InMemoryCatalogEventLog({ startSeq: catalog.lastSeq });
+  const jobStore = new JobStore(path.join(stateRoot, 'jobs.json'));
 
   const toolSet = buildToolSet({
     secretStore,
@@ -63,9 +65,10 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel = new InMemoryCha
     catalog,
     catalogEventLog,
     persistCatalogSnapshot,
+    jobStore,
   });
 
-  return { secretStore, sharedSecretStore, profile, toolSet, channel, catalog, stateRoot, instanceId: profileData.instanceId };
+  return { secretStore, sharedSecretStore, profile, toolSet, channel, catalog, jobStore, stateRoot, instanceId: profileData.instanceId };
 }
 
 module.exports = { createContext };

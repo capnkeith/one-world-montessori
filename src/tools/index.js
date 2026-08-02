@@ -9,6 +9,8 @@ const { createDriveTool } = require('./drive');
 const { createDropboxTool } = require('./dropbox');
 const { createCatalogTool } = require('./catalog');
 const { createClaudeTool } = require('./claude');
+const { createSchedulerTool } = require('./scheduler');
+const { buildJobHandlers } = require('./jobHandlers');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -25,6 +27,7 @@ function buildToolSet({
   catalog,
   catalogEventLog,
   persistCatalogSnapshot,
+  jobStore,
 }) {
   const toolSet = new ToolSet({ name: 'owm-tools', version: TOOLSET_VERSION, instanceId, displayName, secretStore });
 
@@ -67,6 +70,9 @@ function buildToolSet({
     getChannelTool: () => channelTool,
   });
   toolSet.register(claudeTool);
+
+  const schedulerTool = createSchedulerTool({ jobStore, handlers: buildJobHandlers() });
+  toolSet.register(schedulerTool);
 
   return toolSet;
 }

@@ -50,6 +50,7 @@ function startServer({
   channel,
   announceIntervalMs = 30_000,
   adminPollIntervalMs = 10_000,
+  jobPollIntervalMs = 60 * 60_000,
   runUpdateAndExit = defaultRunUpdateAndExit,
 } = {}) {
   const { toolSet } = createContext({ stateRoot, channel });
@@ -87,6 +88,21 @@ function startServer({
   };
   pollAdminCommands();
   const adminPollInterval = setInterval(pollAdminCommands, adminPollIntervalMs);
+
+  // Calendar-scheduled jobs (src/tools/scheduler.js) don't run themselves —
+  // something has to periodically ask "what's due". An hourly tick is
+  // plenty for monthly-granularity jobs; a job type needing finer timing
+  // can always be triggered manually via the scheduler tool's runJob
+  // action in the meantime.
+  const runDueJobs = () => {
+    toolSet.invoke('scheduler', { action: 'runDueJobs' }).then(({ result }) => {
+      if (result.ranCount > 0) console.log(`[scheduler] ran ${result.ranCount} due job(s)`);
+    }).catch((err) => {
+      console.error('scheduler runDueJobs failed:', err.message);
+    });
+  };
+  runDueJobs();
+  const jobPollInterval = setInterval(runDueJobs, jobPollIntervalMs);
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -144,6 +160,7 @@ function startServer({
   server.on('close', () => {
     clearInterval(announceInterval);
     clearInterval(adminPollInterval);
+    clearInterval(jobPollInterval);
   });
   server.listen(port, '127.0.0.1');
   return server;
