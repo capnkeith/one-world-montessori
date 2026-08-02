@@ -286,6 +286,10 @@ function computeNextRun(schedule, from) {
   if (schedule.type === 'monthly') {
     return computeNextMonthlyRun(from, schedule.dayOfMonth, schedule.hour ?? 9, schedule.minute ?? 0);
   }
+  if (schedule.type === 'interval') {
+    if (!schedule.minutes || schedule.minutes <= 0) throw new Error('interval schedule requires a positive minutes value');
+    return new Date(from.getTime() + schedule.minutes * 60_000);
+  }
   throw new Error(`Unknown schedule type "${schedule.type}"`);
 }
 

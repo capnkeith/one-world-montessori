@@ -23,7 +23,7 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
 
   return new Tool({
     name: 'scheduler',
-    version: '2.1.0',
+    version: '2.2.0',
     description:
       'Generic calendar-based background job scheduling with a claim/lease model for safe multi-node execution: add/list/get/cancel/run jobs, reclaim stale leases, record feedback on a run.',
     mcpInputSchema: {

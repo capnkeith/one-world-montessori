@@ -140,3 +140,21 @@ test('billTo and lineItems from job params are passed through to the invoice too
   assert.strictEqual(invoiceTool.calls[0].billTo, 'Some Real Client');
   assert.deepStrictEqual(invoiceTool.calls[0].lineItems, [{ description: 'Real service', amount: 150 }]);
 });
+
+test('send-recurring-test-email sends a plain no-attachment email with sensible defaults', async () => {
+  const sentParams = [];
+  const fakeMailTool = {
+    invoke: async (params) => {
+      sentParams.push(params);
+      return { result: { sent: true } };
+    },
+  };
+  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+
+  await handlers['send-recurring-test-email']({ to: 'seth@oneworldmontessori.org' });
+
+  assert.strictEqual(sentParams[0].to, 'seth@oneworldmontessori.org');
+  assert.strictEqual(sentParams[0].subject, 'Recurring test email');
+  assert.match(sentParams[0].text, /reply stop/i);
+  assert.strictEqual(sentParams[0].attachments, undefined, 'no attachments at all, not even an empty array requiring a source tag');
+});

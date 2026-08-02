@@ -382,3 +382,24 @@ test('reclaimStaleLeases leaves a still-valid (not yet expired) lease alone', ()
   assert.strictEqual(result.stuckCount, 0);
   assert.strictEqual(scheduler.getJob(job.id).status, 'claimed', 'a job still within its lease must not be touched');
 });
+
+test('addJob with schedule.type interval computes nextRunAt as now + minutes, and keeps recurring', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const now = new Date(2026, 7, 1, 12, 0, 0);
+  const job = scheduler.addJob({ type: 'ping', schedule: { type: 'interval', minutes: 3 }, now });
+
+  assert.strictEqual(job.nextRunAt, new Date(2026, 7, 1, 12, 3, 0).toISOString());
+
+  const ranAt = new Date(2026, 7, 1, 12, 3, 0);
+  const updated = await scheduler.runJob(job.id, { handlers: { ping: async () => ({ ok: true }) }, now: ranAt });
+  assert.strictEqual(updated.status, 'scheduled', 'an interval job keeps recurring, same as monthly');
+  assert.strictEqual(updated.nextRunAt, new Date(2026, 7, 1, 12, 6, 0).toISOString(), 'reschedules another `minutes` out from the run that just happened');
+});
+
+test('an interval schedule requires a positive minutes value', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  assert.throws(
+    () => scheduler.addJob({ type: 'ping', schedule: { type: 'interval', minutes: 0 }, now: new Date(2026, 7, 1) }),
+    /positive minutes value/
+  );
+});

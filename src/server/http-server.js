@@ -50,7 +50,7 @@ function startServer({
   channel,
   announceIntervalMs = 30_000,
   adminPollIntervalMs = 10_000,
-  jobPollIntervalMs = 60 * 60_000,
+  jobPollIntervalMs = 60_000,
   replyPollIntervalMs = 15 * 60_000,
   leaseReclaimIntervalMs = 5 * 60_000,
   runUpdateAndExit = defaultRunUpdateAndExit,
@@ -92,10 +92,11 @@ function startServer({
   const adminPollInterval = setInterval(pollAdminCommands, adminPollIntervalMs);
 
   // Calendar-scheduled jobs (src/tools/scheduler.js) don't run themselves —
-  // something has to periodically ask "what's due". An hourly tick is
-  // plenty for monthly-granularity jobs; a job type needing finer timing
-  // can always be triggered manually via the scheduler tool's runJob
-  // action in the meantime.
+  // something has to periodically ask "what's due". A minute-granularity
+  // tick is needed now that schedule.type 'interval' exists (e.g. a
+  // 3-minute recurring job) alongside monthly jobs; checking this often is
+  // still cheap since it's just a local job-store scan, no external calls
+  // unless something is actually due.
   const runDueJobs = () => {
     toolSet.invoke('scheduler', { action: 'runDueJobs' }).then(({ result }) => {
       if (result.ranCount > 0) console.log(`[scheduler] ran ${result.ranCount} due job(s)`);

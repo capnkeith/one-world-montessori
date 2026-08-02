@@ -34,6 +34,10 @@ So instead, at the start of a session here, do this yourself:
    decide:
 
    - Confirms everything is fine → resolve as `{outcome: 'approved'}`.
+   - Clearly asks to stop/cancel (e.g. "stop", "reply stop to stop
+     this" jobs) → cancel it via the `scheduler` tool's `cancelJob`
+     action (`{action: 'cancelJob', id: jobId}`), then resolve as
+     `{outcome: 'stopped', note: '...'}`.
    - Points out a specific, unambiguous fix (wrong recipient, wrong
      amount, wrong subject/body wording) → patch it via the `scheduler`
      tool's `updateJob` action: `{action: 'updateJob', id: jobId,

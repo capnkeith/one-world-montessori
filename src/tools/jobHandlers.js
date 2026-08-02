@@ -63,6 +63,20 @@ function buildJobHandlers({ getMailTool, getInvoiceTool }) {
       });
       return { ...result, invoiceNumber: invoiceResult.invoiceNumber };
     },
+
+    // Deliberately the simplest possible handler — no rendering tool, no
+    // attachments at all — mainly useful for exercising the recurring
+    // (interval) schedule type and the reply-driven stop flow end to end.
+    'send-recurring-test-email': async (params) => {
+      const mailTool = getMailTool();
+      const { result } = await mailTool.invoke({
+        action: 'send',
+        to: params?.to,
+        subject: params?.subject ?? 'Recurring test email',
+        text: params?.text ?? 'This is a recurring test email. Reply STOP to stop this.',
+      });
+      return result;
+    },
   };
 }
 
