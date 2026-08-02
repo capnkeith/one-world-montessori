@@ -6,12 +6,68 @@ const { Tool } = require('../core/Tool');
 const { getGmailClient } = require('../core/gmailAuth');
 const { buildMimeMessage } = require('../core/mime');
 
+function decodeBodyData(bodyData) {
+  return Buffer.from(bodyData, 'base64url').toString('utf8');
+}
+
+/** Recursively finds a text/plain part's decoded content anywhere in a MIME part tree. */
+function findPlainTextPart(part) {
+  if (!part) return null;
+  if (part.mimeType === 'text/plain' && part.body?.data) return decodeBodyData(part.body.data);
+  if (part.parts) {
+    for (const child of part.parts) {
+      const found = findPlainTextPart(child);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/** Same walk, but for text/html — only used when no text/plain part exists anywhere. */
+function findHtmlPart(part) {
+  if (!part) return null;
+  if (part.mimeType === 'text/html' && part.body?.data) return decodeBodyData(part.body.data);
+  if (part.parts) {
+    for (const child of part.parts) {
+      const found = findHtmlPart(child);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+function stripHtml(html) {
+  return html.replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * A simple (non-multipart) message has its content directly on
+ * payload.body — but any attachment, or any HTML-formatted reply (the
+ * vast majority of real-world email, since most clients send
+ * multipart/alternative), nests the actual content inside payload.parts
+ * instead, arbitrarily deep for multipart/mixed wrapping
+ * multipart/alternative. Regression: reading only payload.body.data
+ * silently returned an empty body for exactly these real messages,
+ * which then failed interpretReply's required-replyText check.
+ */
 function extractMessage(data) {
   const headers = data.payload?.headers ?? [];
   const from = headers.find((h) => h.name === 'From')?.value ?? null;
   const subject = headers.find((h) => h.name === 'Subject')?.value ?? null;
-  const bodyData = data.payload?.body?.data;
-  const body = bodyData ? Buffer.from(bodyData, 'base64url').toString('utf8') : '';
+
+  let body = '';
+  if (data.payload?.body?.data) {
+    body = decodeBodyData(data.payload.body.data);
+  } else {
+    const plain = findPlainTextPart(data.payload);
+    if (plain !== null) {
+      body = plain;
+    } else {
+      const html = findHtmlPart(data.payload);
+      if (html !== null) body = stripHtml(html);
+    }
+  }
+
   return { id: data.id, threadId: data.threadId, from, subject, body };
 }
 
@@ -116,6 +172,39 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
             body: { data: Buffer.from('Looks correct, approved.', 'utf8').toString('base64url') },
           },
         },
+        // Regression: a real reply with an attachment (or sent from any
+        // client that sends multipart/alternative, i.e. almost everyone)
+        // nests the actual text several levels deep instead of putting it
+        // on payload.body directly — previously silently extracted as ''.
+        'msg-multipart-plain': {
+          id: 'msg-multipart-plain',
+          threadId: 'thread-2',
+          payload: {
+            headers: [{ name: 'From', value: 'businessmanager@oneworldmontessori.org' }],
+            mimeType: 'multipart/mixed',
+            parts: [
+              {
+                mimeType: 'multipart/alternative',
+                parts: [
+                  { mimeType: 'text/plain', body: { data: Buffer.from('This has the wrong email, please fix.', 'utf8').toString('base64url') } },
+                  { mimeType: 'text/html', body: { data: Buffer.from('<p>This has the wrong email, please fix.</p>', 'utf8').toString('base64url') } },
+                ],
+              },
+              { mimeType: 'application/pdf', body: { attachmentId: 'att-1' } },
+            ],
+          },
+        },
+        // Regression: no text/plain part anywhere (HTML-only reply) must
+        // still produce readable text, not an empty body.
+        'msg-multipart-html-only': {
+          id: 'msg-multipart-html-only',
+          threadId: 'thread-3',
+          payload: {
+            headers: [{ name: 'From', value: 'businessmanager@oneworldmontessori.org' }],
+            mimeType: 'multipart/alternative',
+            parts: [{ mimeType: 'text/html', body: { data: Buffer.from('<p>Approved, <b>thanks</b>!</p>', 'utf8').toString('base64url') } }],
+          },
+        },
       };
       const sendRequestBodies = [];
       const fakeClient = {
@@ -180,6 +269,20 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
       const who = await fakeTool.invoke({ action: 'whoami' });
       assert.strictEqual(who.result.emailAddress, 'claude@oneworldmontessori.org');
+
+      const multipartPlain = await fakeTool.invoke({ action: 'getMessage', id: 'msg-multipart-plain' });
+      assert.strictEqual(
+        multipartPlain.result.message.body,
+        'This has the wrong email, please fix.',
+        'must find the nested text/plain part several levels deep, not the pdf attachment part, and not come back empty'
+      );
+
+      const htmlOnly = await fakeTool.invoke({ action: 'getMessage', id: 'msg-multipart-html-only' });
+      assert.match(
+        htmlOnly.result.message.body,
+        /Approved.*thanks/,
+        'must fall back to text/html with tags stripped when no text/plain part exists anywhere'
+      );
 
       return { passed: true };
     },
