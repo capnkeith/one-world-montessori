@@ -38,6 +38,18 @@
   #peer-menu .peer-menu-divider { border-top: 1px solid #eee; margin: 0.3rem 0; }
   #peer-menu .peer-menu-action { padding: 0.3rem 0.75rem; cursor: pointer; color: #1a1a1a; }
   #peer-menu .peer-menu-action:hover { background: #f0f4ff; }
+  #peer-menu.peer-menu-chat { min-width: 260px; max-width: 320px; }
+  #peer-menu .peer-menu-back { padding: 0.2rem 0.75rem 0.4rem; color: #2a5cdb; cursor: pointer; font-size: 0.9em; }
+  #peer-menu .peer-menu-back:hover { text-decoration: underline; }
+  #peer-menu .peer-chat-messages { max-height: 220px; overflow-y: auto; padding: 0.3rem 0.75rem; display: flex; flex-direction: column; gap: 0.35rem; }
+  #peer-menu .peer-chat-empty { color: #888; font-style: italic; }
+  #peer-menu .peer-chat-message { line-height: 1.35; word-break: break-word; }
+  #peer-menu .peer-chat-message .peer-chat-sender { font-weight: 600; margin-right: 0.3rem; }
+  #peer-menu .peer-chat-message.peer-chat-mine .peer-chat-sender { color: #2a5cdb; }
+  #peer-menu .peer-chat-input-row { display: flex; gap: 0.3rem; padding: 0.4rem 0.75rem 0.2rem; }
+  #peer-menu .peer-chat-input { flex: 1; min-width: 0; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; font-size: 0.9em; font-family: inherit; }
+  #peer-menu .peer-chat-send { padding: 0.3rem 0.6rem; border: none; border-radius: 4px; background: #2a5cdb; color: #fff; cursor: pointer; font-size: 0.9em; }
+  #peer-menu .peer-chat-send:hover { background: #1e46ad; }
   #status { flex-shrink: 0; padding: 0.3rem 0.75rem; font-size: 0.8em; background: #f5f5f5; border-bottom: 1px solid #ddd; }
   #status.ok { color: #1e7b34; }
   #status.error { color: #a12a2a; }
@@ -681,6 +693,7 @@
 
     function showPeerMenu(e, peer) {
       e.preventDefault();
+      peerMenu.classList.remove('peer-menu-chat');
       peerMenu.innerHTML = '';
 
       const header = document.createElement('div');
@@ -706,6 +719,12 @@
       divider.className = 'peer-menu-divider';
       peerMenu.appendChild(divider);
 
+      const chatAction = document.createElement('div');
+      chatAction.className = 'peer-menu-action';
+      chatAction.textContent = 'Send message';
+      chatAction.addEventListener('click', () => showPeerChat(peer));
+      peerMenu.appendChild(chatAction);
+
       const updateAction = document.createElement('div');
       updateAction.className = 'peer-menu-action';
       updateAction.textContent = 'Update server now';
@@ -727,6 +746,113 @@
       peerMenu.style.left = `${e.clientX}px`;
       peerMenu.style.top = `${e.clientY}px`;
       peerMenu.style.display = 'block';
+    }
+
+    // Reuses the same right-click peer-menu popup instead of a separate
+    // floating panel — "Send message" swaps its content into a small
+    // per-peer chat view. Messages are just another channel.send/receive
+    // payload type (chat-message), same plumbing as the admin-command
+    // mechanism above; no new backend tool needed. History is in-memory
+    // only (per browser tab, cleared on reload) and keyed by instanceId,
+    // not by any particular open menu instance.
+    const chatMessages = new Map(); // instanceId -> [{ mine, text, sentAt }]
+    let openChatPeerId = null;
+    let chatSinceSeq = 0;
+
+    function renderChatMessages(container, peerId) {
+      container.innerHTML = '';
+      const messages = chatMessages.get(peerId) ?? [];
+      if (messages.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'peer-chat-empty';
+        empty.textContent = '(no messages yet)';
+        container.appendChild(empty);
+        return;
+      }
+      for (const msg of messages) {
+        const row = document.createElement('div');
+        row.className = 'peer-chat-message' + (msg.mine ? ' peer-chat-mine' : '');
+        const sender = document.createElement('span');
+        sender.className = 'peer-chat-sender';
+        sender.textContent = msg.mine ? 'You:' : `${msg.senderName}:`;
+        row.appendChild(sender);
+        row.appendChild(document.createTextNode(msg.text));
+        container.appendChild(row);
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function showPeerChat(peer) {
+      openChatPeerId = peer.instanceId;
+      peerMenu.classList.add('peer-menu-chat');
+      peerMenu.innerHTML = '';
+
+      const back = document.createElement('div');
+      back.className = 'peer-menu-back';
+      back.textContent = '← Back';
+      back.addEventListener('click', () => showPeerMenu({ preventDefault() {}, clientX: parseInt(peerMenu.style.left), clientY: parseInt(peerMenu.style.top) }, peer));
+      peerMenu.appendChild(back);
+
+      const header = document.createElement('div');
+      header.className = 'peer-menu-header';
+      header.textContent = `Chat with ${peer.displayName}`;
+      peerMenu.appendChild(header);
+
+      const messagesEl = document.createElement('div');
+      messagesEl.className = 'peer-chat-messages';
+      peerMenu.appendChild(messagesEl);
+      renderChatMessages(messagesEl, peer.instanceId);
+
+      const inputRow = document.createElement('div');
+      inputRow.className = 'peer-chat-input-row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'peer-chat-input';
+      input.placeholder = 'Type a message...';
+      const sendBtn = document.createElement('button');
+      sendBtn.className = 'peer-chat-send';
+      sendBtn.textContent = 'Send';
+      inputRow.append(input, sendBtn);
+      peerMenu.appendChild(inputRow);
+
+      async function send() {
+        const text = input.value.trim();
+        if (!text) return;
+        input.value = '';
+        if (!chatMessages.has(peer.instanceId)) chatMessages.set(peer.instanceId, []);
+        chatMessages.get(peer.instanceId).push({ mine: true, text, sentAt: new Date().toISOString() });
+        renderChatMessages(messagesEl, peer.instanceId);
+        try {
+          await invoke('channel', { action: 'send', to: peer.instanceId, type: 'chat-message', payload: { text } });
+        } catch (err) {
+          chatMessages.get(peer.instanceId).push({ mine: false, senderName: '(error)', text: `Failed to send: ${err.message}` });
+          renderChatMessages(messagesEl, peer.instanceId);
+        }
+      }
+      sendBtn.addEventListener('click', send);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') send();
+      });
+
+      input.focus();
+    }
+
+    async function pollChat() {
+      try {
+        const body = await invoke('channel', { action: 'receive', sinceSeq: chatSinceSeq });
+        for (const msg of body.result.messages) {
+          chatSinceSeq = Math.max(chatSinceSeq, msg.seq);
+          if (msg.type !== 'chat-message') continue;
+          if (!chatMessages.has(msg.from)) chatMessages.set(msg.from, []);
+          chatMessages.get(msg.from).push({ mine: false, senderName: peerNamesById.get(msg.from) ?? msg.from, text: msg.payload?.text ?? '', sentAt: msg.sentAt });
+          if (openChatPeerId === msg.from) {
+            const container = peerMenu.querySelector('.peer-chat-messages');
+            if (container) renderChatMessages(container, msg.from);
+          }
+        }
+      } catch {
+        // Chat is a nice-to-have — a poll failure shouldn't disrupt anything else.
+      }
     }
 
     function makeInitialsIcon(peer) {
@@ -773,9 +899,14 @@
       }
     }
 
+    // Lets pollChat resolve an incoming message's raw instanceId (msg.from)
+    // to a real display name, since channel.receive only carries instanceId.
+    const peerNamesById = new Map();
+
     async function refreshPeers() {
       try {
         const body = await invoke('channel', { action: 'list' });
+        for (const peer of body.result.peers) peerNamesById.set(peer.instanceId, peer.displayName);
         // Includes self — with only one real running instance today, this
         // is the only icon that shows at all, and it's still useful (a
         // right-click confirms your own identity/tools and offers the
@@ -792,6 +923,10 @@
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') hidePeerMenu();
     });
+    // Interacting with the menu itself (typing a chat message, clicking
+    // Send/Back) must never trigger the window-level "click closes menu"
+    // handler above.
+    peerMenu.addEventListener('click', (e) => e.stopPropagation());
 
     // --- boot ---
 
@@ -856,6 +991,12 @@
 
     checkConnection();
     navigateTo({ type: 'root' });
+    // Peer presence was previously only ever fetched once at boot, so
+    // icons never reflected anyone coming or going without a page reload.
+    // Chat needs its own, faster poll to feel responsive while a
+    // conversation is open.
+    setInterval(refreshPeers, 15000);
+    setInterval(pollChat, 4000);
   </script>
 </body>
 </html>
