@@ -11,6 +11,7 @@ const { createCatalogTool } = require('./catalog');
 const { createClaudeTool } = require('./claude');
 const { createSchedulerTool } = require('./scheduler');
 const { buildJobHandlers } = require('./jobHandlers');
+const { createMailTool } = require('./mail');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -71,7 +72,10 @@ function buildToolSet({
   });
   toolSet.register(claudeTool);
 
-  const schedulerTool = createSchedulerTool({ jobStore, handlers: buildJobHandlers() });
+  const mailTool = createMailTool({ secretStore });
+  toolSet.register(mailTool);
+
+  const schedulerTool = createSchedulerTool({ jobStore, handlers: buildJobHandlers({ getMailTool: () => mailTool }) });
   toolSet.register(schedulerTool);
 
   return toolSet;

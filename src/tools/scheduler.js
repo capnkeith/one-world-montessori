@@ -21,7 +21,7 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
     version: '1.0.0',
     description: 'Generic calendar-based background job scheduling: add/list/get/cancel/run jobs, record feedback on a run.',
     mcpInputSchema: {
-      action: z.enum(['addJob', 'listJobs', 'getJob', 'cancelJob', 'runJob', 'runDueJobs', 'recordFeedback']).optional(),
+      action: z.enum(['addJob', 'listJobs', 'getJob', 'updateJob', 'cancelJob', 'runJob', 'runDueJobs', 'recordFeedback']).optional(),
       type: z.string().optional(),
       label: z.string().optional(),
       schedule: z.any().optional(),
@@ -52,6 +52,14 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
           if (!job) throw new Error(`No job with id ${params.id}`);
           return { job };
         }
+
+        case 'updateJob':
+          if (!params.id) throw new Error('updateJob requires id');
+          return scheduler.updateJob(params.id, {
+            label: params.label,
+            schedule: params.schedule,
+            params: params.params,
+          });
 
         case 'cancelJob':
           if (!params.id) throw new Error('cancelJob requires id');
@@ -109,11 +117,14 @@ function createSchedulerTool({ jobStore, handlers = {} }) {
       const fetched = await fakeTool.invoke({ action: 'getJob', id: added.result.id });
       assert.strictEqual(fetched.result.job.id, added.result.id);
 
+      const updated = await fakeTool.invoke({ action: 'updateJob', id: added.result.id, params: { foo: 'baz' } });
+      assert.deepStrictEqual(updated.result.params, { foo: 'baz' });
+
       const ran = await fakeTool.invoke({ action: 'runJob', id: added.result.id });
       assert.strictEqual(handlerCalls, 1);
       assert.strictEqual(ran.result.history.length, 1);
       assert.strictEqual(ran.result.history[0].status, 'success');
-      assert.deepStrictEqual(ran.result.history[0].detail, { echoed: { foo: 'bar' } });
+      assert.deepStrictEqual(ran.result.history[0].detail, { echoed: { foo: 'baz' } });
 
       const fedBack = await fakeTool.invoke({
         action: 'recordFeedback',

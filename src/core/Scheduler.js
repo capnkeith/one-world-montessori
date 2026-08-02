@@ -52,6 +52,23 @@ class Scheduler {
     return this.store.load().find((j) => j.id === id) ?? null;
   }
 
+  /** Merges a patch (label/schedule/params) into an existing job; recomputes nextRunAt if the schedule changed. */
+  updateJob(id, patch, { now = new Date() } = {}) {
+    const jobs = this.store.load();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) throw new Error(`No job with id ${id}`);
+    if (job.status === 'cancelled') throw new Error(`Job ${id} is cancelled`);
+
+    if (patch.label !== undefined) job.label = patch.label;
+    if (patch.params !== undefined) job.params = patch.params;
+    if (patch.schedule !== undefined) {
+      job.schedule = patch.schedule;
+      job.nextRunAt = computeNextRun(patch.schedule, now).toISOString();
+    }
+    this.store.save(jobs);
+    return job;
+  }
+
   cancelJob(id) {
     const jobs = this.store.load();
     const job = jobs.find((j) => j.id === id);

@@ -125,6 +125,39 @@ test('runDueJobs only runs jobs whose nextRunAt has passed, leaving future jobs 
   assert.strictEqual(scheduler.getJob(futureJob.id).status, 'scheduled', 'future job must not have run');
 });
 
+test('updateJob merges a patch into an existing job and recomputes nextRunAt only if the schedule changed', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'send-invoice',
+    schedule: { type: 'monthly', dayOfMonth: 2 },
+    params: { to: 'old@example.com' },
+    now: new Date(2026, 7, 1),
+  });
+  const originalNextRunAt = job.nextRunAt;
+
+  const withNewParams = scheduler.updateJob(job.id, { params: { to: 'new@example.com', subject: 'Invoice' } });
+  assert.deepStrictEqual(withNewParams.params, { to: 'new@example.com', subject: 'Invoice' });
+  assert.strictEqual(withNewParams.nextRunAt, originalNextRunAt, 'nextRunAt must be untouched when only params change');
+
+  const withNewSchedule = scheduler.updateJob(
+    job.id,
+    { schedule: { type: 'monthly', dayOfMonth: 15 } },
+    { now: new Date(2026, 7, 1) }
+  );
+  assert.strictEqual(new Date(withNewSchedule.nextRunAt).getDate(), 15);
+});
+
+test('updateJob refuses to modify a cancelled job', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 2).toISOString() },
+    now: new Date(2026, 7, 1),
+  });
+  scheduler.cancelJob(job.id);
+  assert.throws(() => scheduler.updateJob(job.id, { params: { x: 1 } }), /is cancelled/);
+});
+
 test('cancelJob stops a job from ever running again', async () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const job = scheduler.addJob({

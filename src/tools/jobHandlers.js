@@ -5,22 +5,36 @@
  * scheduling mechanism itself (src/core/Scheduler.js, src/tools/scheduler.js)
  * so adding a new job type never touches scheduling logic.
  *
- * `send-monthly-invoice-email` is registered (so its job can actually be
- * scheduled today) but deliberately NOT implemented — the real email
- * format, the "options that feed back on the task" mechanism, and how
- * email actually gets sent (Gmail API needs its own OAuth scope; no
- * mail-sending tool exists yet) are all still open questions for Seth.
- * Running this job before it's filled in fails loudly with a clear
- * explanation instead of silently no-op'ing or fabricating an email.
+ * `send-monthly-invoice-email` now has a real send path (the `mail` tool,
+ * Gmail API — 2026-08-01) but is still deliberately incomplete: the job's
+ * `params` must carry the actual subject/body/attachment, which nobody
+ * has supplied yet (Seth is crafting the real email content himself, and
+ * the sending identity — his own account vs. a dedicated
+ * claude@oneworldmontessori.org mailbox being set up for dispute
+ * resolution — isn't decided). Running this job before those params
+ * exist fails loudly with a clear explanation instead of silently
+ * no-op'ing or fabricating invoice content.
  */
-function buildJobHandlers() {
+function buildJobHandlers({ getMailTool }) {
   return {
-    'send-monthly-invoice-email': async () => {
-      throw new Error(
-        'send-monthly-invoice-email has no real implementation yet — this job is scheduled but not runnable. ' +
-          'Needs: the actual invoice format/content, what "options that feed back on the task" means concretely, ' +
-          'and a real email-sending mechanism (no Gmail-send tool exists yet). Ask Seth for these before implementing.'
-      );
+    'send-monthly-invoice-email': async (params) => {
+      if (!params?.subject || !(params.text || params.html)) {
+        throw new Error(
+          'send-monthly-invoice-email has no real content configured yet — job.params needs at least ' +
+            '{ subject, text|html } (plus optional attachments) before this can actually send. ' +
+            'Ask Seth for the real invoice format before filling these in.'
+        );
+      }
+      const mailTool = getMailTool();
+      const { result } = await mailTool.invoke({
+        action: 'send',
+        to: params.to,
+        subject: params.subject,
+        text: params.text,
+        html: params.html,
+        attachments: params.attachments,
+      });
+      return result;
     },
   };
 }
