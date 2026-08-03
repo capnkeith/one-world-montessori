@@ -11,6 +11,7 @@ const { createSecretStore } = require('../core/SecretStore');
 const { autoDiscoverChannel } = require('../core/autoDiscoverChannel');
 
 const SAMPLE_APP_PATH = path.join(__dirname, '..', '..', 'sample-app', 'index.html');
+const STATUS_PAGE_PATH = path.join(__dirname, '..', '..', 'sample-app', 'status.html');
 const CHECK_FOR_UPDATE_PATH = path.join(__dirname, '..', '..', 'bootstrap', 'check-for-update.js');
 
 /**
@@ -171,6 +172,17 @@ function startServer({
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(fs.readFileSync(SAMPLE_APP_PATH));
+        return;
+      }
+
+      // Real-time view into compute-node presence, scheduler job status,
+      // and the Ask Claude queue - every data source it polls (channel
+      // list, scheduler listJobs, promptQueue listPrompts) is read-only,
+      // so simply having this page open can never claim a job or a
+      // prompt away from a compute node that's actually about to work it.
+      if (req.method === 'GET' && url.pathname === '/status.html') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(fs.readFileSync(STATUS_PAGE_PATH));
         return;
       }
 

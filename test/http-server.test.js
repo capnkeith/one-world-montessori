@@ -67,6 +67,23 @@ test('GET / and GET /index.html serve the sample app so a landing page can hand 
   }
 });
 
+test('GET /status.html serves the real-time compute-node/job/queue monitoring page', async () => {
+  const server = startServer({ port: 0, stateRoot: tempStateRoot() });
+  await listen(server);
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+
+  try {
+    const res = await fetch(`${base}/status.html`);
+    assert.strictEqual(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    const body = await res.text();
+    assert.match(body, /<title>OWM Status<\/title>/);
+  } finally {
+    server.close();
+  }
+});
+
 test('POST /tools/:name/invoke for an unknown tool returns 500 with an error body', async () => {
   const server = startServer({ port: 0, stateRoot: tempStateRoot() });
   await listen(server);

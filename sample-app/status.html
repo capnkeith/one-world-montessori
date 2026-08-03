@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OWM Status</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: system-ui, sans-serif; color: #1a1a1a; background: #f5f6f8; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; background: #fff; border-bottom: 1px solid #ddd; }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  header a { color: #2a5cdb; text-decoration: none; font-size: 0.9em; }
+  header a:hover { text-decoration: underline; }
+  #refreshed { color: #888; font-size: 0.8em; }
+  main { max-width: 960px; margin: 0 auto; padding: 1rem; display: flex; flex-direction: column; gap: 1.25rem; }
+  section { background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 0.9rem 1rem; }
+  section h2 { font-size: 0.95rem; margin: 0 0 0.6rem; color: #333; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+  th { color: #666; font-weight: 600; font-size: 0.85em; }
+  tr:last-child td { border-bottom: none; }
+  .muted { color: #888; font-style: italic; }
+  .pill { display: inline-block; border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.8em; font-weight: 600; }
+  .pill-scheduled { background: #e6f0ff; color: #1a4fb0; }
+  .pill-claimed { background: #fff3d6; color: #92660a; }
+  .pill-stuck { background: #fde2e2; color: #a02020; }
+  .pill-paused { background: #ececec; color: #555; }
+  .pill-cancelled { background: #ececec; color: #999; }
+  .pill-completed { background: #e4f7e9; color: #206b34; }
+  .pill-online { background: #e4f7e9; color: #206b34; }
+  .pill-answered { background: #e4f7e9; color: #206b34; }
+  .pill-pending { background: #fff3d6; color: #92660a; }
+  .node-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; }
+  .node-row img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+  .node-row .avatar-fallback { width: 28px; height: 28px; border-radius: 50%; background: #2a5cdb; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.75em; font-weight: 600; }
+  code.small { font-size: 0.8em; color: #888; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>OWM Status</h1>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <span id="refreshed"></span>
+      <a href="/">&larr; Back to Drive</a>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Compute nodes</h2>
+      <div id="nodes"><span class="muted">Loading...</span></div>
+    </section>
+
+    <section>
+      <h2>Scheduled jobs</h2>
+      <div id="jobs"><span class="muted">Loading...</span></div>
+    </section>
+
+    <section>
+      <h2>Ask Claude queue</h2>
+      <div id="prompts"><span class="muted">Loading...</span></div>
+    </section>
+  </main>
+
+  <script>
+    const BASE_URL = '';
+
+    async function invoke(toolName, params) {
+      const res = await fetch(`${BASE_URL}/tools/${toolName}/invoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const body = await res.json();
+      if (body.error) throw new Error(body.error);
+      return body.result;
+    }
+
+    function el(tag, props = {}, children = []) {
+      const node = document.createElement(tag);
+      Object.assign(node, props);
+      for (const child of children) node.append(child);
+      return node;
+    }
+
+    function timeAgo(iso) {
+      if (!iso) return '—';
+      const ms = Date.now() - new Date(iso).getTime();
+      if (ms < 0) return new Date(iso).toLocaleString();
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return `${s}s ago`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return new Date(iso).toLocaleDateString();
+    }
+
+    // --- compute nodes: reuses channel's presence list (already excludes
+    // anyone stale) - the same data source the main app's peer icons use.
+    async function renderNodes() {
+      const container = document.getElementById('nodes');
+      try {
+        const { peers } = await invoke('channel', { action: 'list' });
+        if (!peers.length) {
+          container.replaceChildren(el('span', { className: 'muted', textContent: 'No compute nodes online right now.' }));
+          return;
+        }
+        const rows = peers.map((p) => {
+          const avatar = p.photoLink
+            ? el('img', { src: p.photoLink, alt: '' })
+            : el('span', { className: 'avatar-fallback', textContent: (p.displayName || '?')[0].toUpperCase() });
+          const label = el('span', {}, [
+            document.createTextNode(`${p.displayName || p.instanceId} `),
+            el('span', { className: 'pill pill-online', textContent: 'online' }),
+            document.createTextNode(` · v${p.toolSetVersion || '?'} · last seen ${timeAgo(p.lastSeen)}`),
+          ]);
+          return el('div', { className: 'node-row' }, [avatar, label]);
+        });
+        container.replaceChildren(...rows);
+      } catch (err) {
+        container.replaceChildren(el('span', { className: 'muted', textContent: `Could not load nodes: ${err.message}` }));
+      }
+    }
+
+    // --- scheduled jobs: real scheduler state, read-only (listJobs never
+    // claims anything, unlike runJob/claimJob).
+    function jobPillClass(status) {
+      return `pill pill-${status || 'scheduled'}`;
+    }
+
+    async function renderJobs() {
+      const container = document.getElementById('jobs');
+      try {
+        const { jobs } = await invoke('scheduler', { action: 'listJobs' });
+        if (!jobs.length) {
+          container.replaceChildren(el('span', { className: 'muted', textContent: 'No jobs scheduled.' }));
+          return;
+        }
+        const table = el('table');
+        table.append(
+          el('thead', {}, [
+            el('tr', {}, [
+              el('th', { textContent: 'Label' }),
+              el('th', { textContent: 'Type' }),
+              el('th', { textContent: 'Status' }),
+              el('th', { textContent: 'Next run' }),
+              el('th', { textContent: 'Last run' }),
+              el('th', { textContent: 'Runs' }),
+            ]),
+          ])
+        );
+        const tbody = el('tbody');
+        for (const job of jobs) {
+          tbody.append(
+            el('tr', {}, [
+              el('td', { textContent: job.label }),
+              el('td', {}, [el('code', { className: 'small', textContent: job.type })]),
+              el('td', {}, [el('span', { className: jobPillClass(job.status), textContent: job.status })]),
+              el('td', { textContent: job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : '—' }),
+              el('td', { textContent: job.lastRunAt ? timeAgo(job.lastRunAt) : 'never' }),
+              el('td', { textContent: String(job.history?.length ?? 0) }),
+            ])
+          );
+        }
+        table.append(tbody);
+        container.replaceChildren(table);
+      } catch (err) {
+        container.replaceChildren(el('span', { className: 'muted', textContent: `Could not load jobs: ${err.message}` }));
+      }
+    }
+
+    // --- ask claude queue: read-only listPrompts (never claims, unlike
+    // checkPending) so simply viewing this page can never steal a prompt
+    // away from a compute node that's actually about to answer it.
+    async function renderPrompts() {
+      const container = document.getElementById('prompts');
+      try {
+        const { prompts } = await invoke('promptQueue', { action: 'listPrompts' });
+        if (!prompts.length) {
+          container.replaceChildren(el('span', { className: 'muted', textContent: 'No prompts submitted yet.' }));
+          return;
+        }
+        const sorted = [...prompts].sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+        const table = el('table');
+        table.append(
+          el('thead', {}, [
+            el('tr', {}, [
+              el('th', { textContent: 'Asked by' }),
+              el('th', { textContent: 'Query' }),
+              el('th', { textContent: 'Status' }),
+              el('th', { textContent: 'Submitted' }),
+            ]),
+          ])
+        );
+        const tbody = el('tbody');
+        for (const p of sorted) {
+          const statusCell = p.answeredAt
+            ? el('span', { className: 'pill pill-answered', textContent: 'answered' })
+            : p.claimedBy
+              ? el('span', { className: 'pill pill-claimed', textContent: 'being answered' })
+              : el('span', { className: 'pill pill-pending', textContent: 'pending' });
+          tbody.append(
+            el('tr', {}, [
+              el('td', { textContent: p.user?.displayName || p.user?.email || '—' }),
+              el('td', { textContent: p.query }),
+              el('td', {}, [statusCell]),
+              el('td', { textContent: timeAgo(p.submittedAt) }),
+            ])
+          );
+        }
+        table.append(tbody);
+        container.replaceChildren(table);
+      } catch (err) {
+        container.replaceChildren(el('span', { className: 'muted', textContent: `Could not load queue: ${err.message}` }));
+      }
+    }
+
+    async function refreshAll() {
+      await Promise.all([renderNodes(), renderJobs(), renderPrompts()]);
+      document.getElementById('refreshed').textContent = `updated ${new Date().toLocaleTimeString()}`;
+    }
+
+    refreshAll();
+    setInterval(refreshAll, 5_000);
+  </script>
+</body>
+</html>

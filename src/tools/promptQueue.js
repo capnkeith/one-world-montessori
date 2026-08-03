@@ -24,9 +24,9 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
     name: 'promptQueue',
     version: '1.2.0',
     description:
-      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, reportProgress for a short status update while working, recordAnswer (text plus optional Drive entries), getPrompt to poll, health to check if a provider is available.',
+      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, reportProgress for a short status update while working, recordAnswer (text plus optional Drive entries), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
     mcpInputSchema: {
-      action: z.enum(['submit', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'health']).optional(),
+      action: z.enum(['submit', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'listPrompts', 'health']).optional(),
       query: z.string().optional(),
       id: z.string().optional(),
       progress: z.string().optional(),
@@ -95,6 +95,23 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
             progress: prompt.progress ?? null,
           };
         }
+
+        case 'listPrompts':
+          // Read-only, never claims anything - unlike checkPending, safe
+          // for a monitoring view to poll freely without disturbing which
+          // compute node is actually working an entry.
+          return {
+            prompts: promptQueue.listPrompts().map((p) => ({
+              id: p.id,
+              query: p.query,
+              user: p.user ?? null,
+              submittedAt: p.submittedAt,
+              answeredAt: p.answeredAt,
+              answer: p.answer,
+              claimedBy: p.claimedBy,
+              leaseExpiresAt: p.leaseExpiresAt,
+            })),
+          };
 
         case 'health':
           return { available: heartbeat.isHealthy() };
@@ -212,6 +229,16 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
       await fakeTool.invoke({ action: 'recordAnswer', id: plainSubmitted.result.id, answer: { text: 'No idea, I don\'t track time.' } });
       const plainPolled = await fakeTool.invoke({ action: 'getPrompt', id: plainSubmitted.result.id });
       assert.strictEqual(plainPolled.result.answer.entries, undefined);
+
+      // listPrompts: a read-only view of everything, for a monitoring
+      // dashboard - must never claim anything itself.
+      const listed = await fakeTool.invoke({ action: 'listPrompts' });
+      assert.strictEqual(listed.result.prompts.length, 2, 'both the Drive-answered and the plain-text prompt must show up');
+      const listedFirst = listed.result.prompts.find((p) => p.id === submitted.result.id);
+      assert.strictEqual(listedFirst.answer.text, 'Found one folder and one file.');
+      assert.deepStrictEqual(listedFirst.user, askingUser);
+      const stillClaimable = await fakeTool.invoke({ action: 'checkPending' });
+      assert.strictEqual(stillClaimable.result.pending.length, 0, 'listPrompts must never claim anything - both prompts are already answered regardless');
 
       return { passed: true };
     },
