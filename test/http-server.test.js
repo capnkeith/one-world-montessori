@@ -79,6 +79,11 @@ test('GET /status.html serves the real-time compute-node/job/queue monitoring pa
     assert.match(res.headers.get('content-type'), /text\/html/);
     const body = await res.text();
     assert.match(body, /<title>OWM Status<\/title>/);
+    // The inspect/edit panel must actually be wired to the scheduler
+    // tool's real mutating actions, not just list jobs read-only.
+    for (const action of ['getJob', 'updateJob', 'pauseJob', 'resumeJob', 'cancelJob', 'runJob', 'testJob']) {
+      assert.ok(body.includes(action), `status page must wire up the scheduler '${action}' action`);
+    }
   } finally {
     server.close();
   }
