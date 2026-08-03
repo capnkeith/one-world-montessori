@@ -33,6 +33,15 @@ test('submit requires a query', () => {
   assert.throws(() => queue.submit({}), /requires query/);
 });
 
+test('submit carries the asking user along, defaulting to null when not given', () => {
+  const queue = new PromptQueue({ store: fakeStore() });
+  const withUser = queue.submit({ query: 'what is in the OWM folder?', user: { email: 'seth@oneworldmontessori.org' } });
+  assert.deepStrictEqual(withUser.user, { email: 'seth@oneworldmontessori.org' });
+
+  const withoutUser = queue.submit({ query: 'hi' });
+  assert.strictEqual(withoutUser.user, null);
+});
+
 test('claimPrompt lets one node claim it, blocking a second node while the lease is live', () => {
   const store = fakeStore();
   const queue = new PromptQueue({ store });
@@ -98,6 +107,16 @@ test('recordAnswer sets the answer and releases the claim', () => {
   assert.strictEqual(answered.claimedBy, null);
   assert.strictEqual(answered.claimedAt, null);
   assert.strictEqual(answered.leaseExpiresAt, null);
+});
+
+test('recordAnswer accepts a structured { text, entries } answer just as freely as a plain string (the class itself is answer-shape-agnostic; the promptQueue tool enforces the real shape)', () => {
+  const store = fakeStore();
+  const queue = new PromptQueue({ store });
+  const prompt = queue.submit({ query: 'what is in the OWM folder?' });
+
+  const entries = [{ id: 'folder-1', name: 'OWM', mimeType: 'application/vnd.google-apps.folder', isFolder: true }];
+  const answered = queue.recordAnswer({ id: prompt.id, answer: { text: 'One folder found.', entries } });
+  assert.deepStrictEqual(answered.answer, { text: 'One folder found.', entries });
 });
 
 test('getPrompt returns null for an id that does not exist, listPrompts returns everything', () => {

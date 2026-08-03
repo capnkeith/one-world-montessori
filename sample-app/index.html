@@ -701,9 +701,26 @@
       }
     }
 
-    // Plain-text answers only (no files-vs-text distinction) - a compute
-    // node just writes a reply, same as answering an email reply, not a
-    // forced tool call the way the old API-driven claude.query worked.
+    // Renders a promptQueue answer ({ text, entries? }) into the preview
+    // pane: the text blurb always, plus - for a Drive-centered query - a
+    // real, clickable list of Drive entries (a folder listing, or just
+    // one file) rendered the same way browse/search results are,
+    // reusing renderEntryList so click/dblclick/context-menu all work
+    // identically. A plain non-Drive answer just has no entries.
+    function renderAskClaudeAnswer(answer) {
+      previewEl.innerHTML = '';
+      const textEl = document.createElement('div');
+      textEl.textContent = answer.text ?? '';
+      previewEl.appendChild(textEl);
+
+      if (answer.entries && answer.entries.length > 0) {
+        const resultsEl = document.createElement('div');
+        resultsEl.style.marginTop = '0.75rem';
+        previewEl.appendChild(resultsEl);
+        renderEntryList(resultsEl, answer.entries, { headerText: 'Drive results:' });
+      }
+    }
+
     askInput.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter' || askInput.disabled) return;
       const query = askInput.value.trim();
@@ -712,7 +729,7 @@
       try {
         const submitted = await invoke('promptQueue', { action: 'submit', query });
         const answer = await pollForAnswer(submitted.result.id);
-        previewEl.textContent = answer;
+        renderAskClaudeAnswer(answer);
       } catch (err) {
         previewEl.textContent = `Ask Claude failed: ${err.message}`;
       }

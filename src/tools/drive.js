@@ -139,10 +139,10 @@ function createFakeDriveClient() {
         return { data: { id: fileId, name: 'Report.docx', mimeType: 'application/vnd.google-apps.document' } };
       },
       export: async () => ({ data: 'exported doc text' }),
-      create: async ({ requestBody }) => {
-        const folder = { id: 'new-folder-1', name: requestBody.name, mimeType: requestBody.mimeType };
-        created.push(folder);
-        return { data: folder };
+      create: async ({ requestBody, media }) => {
+        const created_ = { id: 'new-folder-1', name: requestBody.name, mimeType: requestBody.mimeType, media };
+        created.push(created_);
+        return { data: created_ };
       },
       update: async (args) => {
         updated.push(args);
@@ -201,6 +201,25 @@ async function driveInternalTest() {
   assert.strictEqual(createResult.result.created, true);
   assert.strictEqual(createResult.result.folder.name, 'OWM');
   assert.strictEqual(fakeClient.created.length, 1);
+
+  // createFile: defaults to a native Google Doc, converted from the
+  // plain-text content given — used for e.g. a Claude compute node
+  // writing a synthesized answer when no existing file covers a query.
+  const createFileResult = await fakeTool.invoke({ action: 'createFile', name: 'Answer.doc', content: 'Here is the answer.', parentId: 'root' });
+  assert.strictEqual(createFileResult.result.created, true);
+  assert.strictEqual(createFileResult.result.file.name, 'Answer.doc');
+  assert.strictEqual(fakeClient.created.at(-1).mimeType, 'application/vnd.google-apps.document', 'defaults to a native Google Doc, not a raw text file');
+  assert.strictEqual(fakeClient.created.at(-1).media.mimeType, 'text/plain');
+  assert.strictEqual(fakeClient.created.at(-1).media.body, 'Here is the answer.');
+
+  const createFilePlainResult = await fakeTool.invoke({
+    action: 'createFile',
+    name: 'answer.txt',
+    content: 'plain content',
+    mimeType: 'text/plain',
+  });
+  assert.strictEqual(createFilePlainResult.result.created, true);
+  assert.strictEqual(fakeClient.created.at(-1).mimeType, 'text/plain', 'mimeType is overridable away from the Google Doc default');
 
   const moveResult = await fakeTool.invoke({ action: 'move', id: 'folder-1', newParentId: 'new-folder-1' });
   assert.strictEqual(moveResult.result.moved, true);
@@ -271,15 +290,17 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
 
   return new Tool({
     name: 'drive',
-    version: '2.2.0',
+    version: '2.3.0',
     description: 'Real Google Drive browsing and organizing for the account that authorized it. Call `authorize` once before anything else.',
     mcpInputSchema: {
-      action: z.enum(['setup', 'authorize', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy', 'whoami']).optional(),
+      action: z.enum(['setup', 'authorize', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'createFile', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy', 'whoami']).optional(),
       clientJsonPath: z.string().optional(),
       folderId: z.string().optional(),
       query: z.string().optional(),
       id: z.string().optional(),
       name: z.string().optional(),
+      content: z.string().optional(),
+      mimeType: z.string().optional(),
       parentId: z.string().optional(),
       newParentId: z.string().optional(),
     },
@@ -415,6 +436,28 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
           fields: 'id, name, mimeType, webViewLink',
         });
         return { created: true, folder: mapFile(res.data) };
+      }
+
+      // Creates a real new file with synthesized content — e.g. a Claude
+      // compute node answering an Ask-Claude prompt where no existing
+      // Drive file already covers the question writes its answer here so
+      // there's something real and browsable to point at, not just a
+      // one-off chat reply that leaves no trace in Drive. Defaults to a
+      // native Google Doc (Drive auto-converts the plain-text upload) so
+      // it opens nicely for a human, not a raw .txt download.
+      if (action === 'createFile') {
+        if (!params.name) throw new Error('createFile requires name');
+        if (params.content === undefined) throw new Error('createFile requires content');
+        const res = await cachedClient.files.create({
+          requestBody: {
+            name: params.name,
+            mimeType: params.mimeType ?? 'application/vnd.google-apps.document',
+            parents: params.parentId ? [params.parentId] : undefined,
+          },
+          media: { mimeType: 'text/plain', body: params.content },
+          fields: 'id, name, mimeType, webViewLink',
+        });
+        return { created: true, file: mapFile(res.data) };
       }
 
       if (action === 'move') {
