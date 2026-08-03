@@ -8,29 +8,46 @@ const DEFAULT_LEASE_MS = 10 * 60_000; // 10 minutes
  * The second job queue (see WORKER.md): the sample app's "Ask Claude" bar
  * submits a prompt here instead of calling claude.query directly (which
  * bills the Anthropic API per token) - a Claude compute node pulls
- * unanswered prompts, replies in plain text, and the app polls for the
- * answer. Same claim/lease shape as Scheduler's job claiming
- * (claimJob/completeJob) and disputeResolver's reply claiming
- * (claimReplyEntry), so multiple compute nodes can safely pull from the
- * same queue without two of them answering the same prompt.
+ * unanswered prompts, replies, and the app polls for the answer. Same
+ * claim/lease shape as Scheduler's job claiming (claimJob/completeJob)
+ * and disputeResolver's reply claiming (claimReplyEntry), so multiple
+ * compute nodes can safely pull from the same queue without two of them
+ * answering the same prompt.
  *
- * Prompt shape: { id, query, submittedAt, answeredAt, answer, claimedBy,
- * claimedAt, leaseExpiresAt }. Uses the same generic `store` interface as
- * JobStore ({ load(): T[], save(items), mutate(id, updaterFn) }) - in
- * fact a plain JobStore instance pointed at its own file works directly,
- * since neither this class nor JobStore know anything job-specific about
- * the objects they persist.
+ * Prompt shape: { id, query, user, submittedAt, answeredAt, answer,
+ * claimedBy, claimedAt, leaseExpiresAt }. `user` is whichever account
+ * actually submitted the query (the resolved identity of the OWM
+ * install/process that served the sample app to them) - carried along so
+ * whichever compute node answers it can see whose query this is and
+ * honor *their* Drive view (see WORKER.md: hidden folders and sharing
+ * can differ per account even within the shared OWM tree, so a node
+ * answering on someone else's behalf must not just substitute its own
+ * view without saying so).
+ *
+ * `answer` is `{ text, entries? }` - `entries` is an optional array of
+ * Drive-entry-shaped objects (same shape `drive`'s browse/search return:
+ * id/name/mimeType/isFolder/webViewLink) for a Drive-centered query whose
+ * answer is naturally a file or a list of files/folders, rendered as real
+ * clickable Drive entries in the app rather than just described in
+ * prose. A plain non-Drive question just omits entries.
+ *
+ * Uses the same generic `store` interface as JobStore ({ load(): T[],
+ * save(items), mutate(id, updaterFn) }) - in fact a plain JobStore
+ * instance pointed at its own file works directly, since neither this
+ * class nor JobStore know anything job-specific about the objects they
+ * persist.
  */
 class PromptQueue {
   constructor({ store }) {
     this.store = store;
   }
 
-  submit({ query, now = new Date() }) {
+  submit({ query, user = null, now = new Date() }) {
     if (!query) throw new Error('submit requires query');
     const prompt = {
       id: crypto.randomUUID(),
       query,
+      user,
       submittedAt: now.toISOString(),
       answeredAt: null,
       answer: null,

@@ -133,16 +133,57 @@ compute node happens to be checking.
 
 2. If `result.pending` is empty, there's nothing to do right now.
 
-3. If it's non-empty, each entry is `{id, query, submittedAt}`. For each
-   one: read `query`, figure out the actual answer yourself (you likely
-   already have `drive`/`channel`/etc. tools available — use them
-   normally, this queue has no special restriction on which tools you
-   use to research the answer, unlike the reply-resolution queue's DLP
-   guardrails), then call the `promptQueue` tool's `recordAnswer` action
-   with `{id, answer}` — plain text, no forced files-vs-text structure
-   the way the old API-driven `claude.query` had. Keep answers
-   reasonably concise; this shows up directly in the sample app's
-   preview pane.
+3. If it's non-empty, each entry is `{id, query, user, submittedAt}`.
+   `user` is whichever real account submitted it (`{email, displayName}`,
+   or `null` if it couldn't be resolved). For each one: read `query`,
+   figure out the actual answer yourself (you likely already have
+   `drive`/`channel`/etc. tools available — use them normally, this
+   queue has no special restriction on which tools you use to research
+   the answer, unlike the reply-resolution queue's DLP guardrails), then
+   call the `promptQueue` tool's `recordAnswer` action with `{id, answer:
+   {text, entries?}}`:
+
+   - `text` — always required, plain prose. Keep it reasonably concise;
+     this shows up directly in the sample app's preview pane.
+   - `entries` — optional, only for a query whose natural answer is one
+     or more real Drive items (a folder listing, or just a single file).
+     Each entry is the same shape `drive`'s `browse`/`search` already
+     return (`id`, `name`, `mimeType`, `isFolder`, `webViewLink`) — the
+     app renders these as real, clickable Drive rows, not just words
+     describing them. Omit `entries` entirely for a plain non-Drive
+     question.
+
+### Drive-centered queries: search the shared OWM tree, respect the asker's own view
+
+If `query` sounds like it's about **OWM Drive** (the shared org tree —
+what `drive`'s `browse` with no `folderId` shows as the `OWM` entry, not
+personal "My Drive"), actually search it before answering:
+
+1. Use `drive`'s `search`/`browse`/`getContent` for real — don't guess
+   or answer from memory of what you think is in there.
+2. **Respect the asker's own Drive view, not just yours.** Call `drive`'s
+   `whoami` action to see which account *you're* running as, and compare
+   against the prompt's `user.email`. If they match, proceed normally —
+   whatever you see is what they'd see. If they *don't* match, you can't
+   be sure your view (hidden folders via `hideFolder` are per-account,
+   and sharing can differ) matches what `user` is actually allowed to
+   see — say so plainly in `text` (e.g. "I'm running as a different
+   account than you, so I can't guarantee this reflects exactly what you
+   have access to") rather than silently substituting your own
+   permissions for theirs. Still show what you found; just be honest
+   about the caveat.
+3. If a real existing file or folder listing answers the question,
+   return it as `entries` (one entry for a single file, several for a
+   folder listing) with a short `text` summary.
+4. **If nothing existing answers it**, synthesize the answer yourself
+   and write it down as a real file via `drive`'s `createFile` action
+   (`{name, content, parentId}` — defaults to a native Google Doc
+   converted from your plain-text content) rather than only replying in
+   chat-like text that leaves no trace in Drive. Put it somewhere
+   sensible under the shared OWM folder (pass its id as `parentId`), then
+   return that one new file as the sole `entries` item, with `text`
+   noting it's a newly created document answering their question — never
+   silently create files without saying so.
 
 4. Same multi-node safety as the reply queue: `checkPending` claims each
    prompt (`scheduler`-style claim/lease, 10-minute lease) before

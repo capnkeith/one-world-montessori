@@ -22,22 +22,40 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
 
   return new Tool({
     name: 'promptQueue',
-    version: '1.0.0',
+    version: '1.1.0',
     description:
-      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, recordAnswer, getPrompt to poll, health to check if a provider is available.',
+      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, recordAnswer (text plus optional Drive entries), getPrompt to poll, health to check if a provider is available.',
     mcpInputSchema: {
       action: z.enum(['submit', 'checkPending', 'recordAnswer', 'getPrompt', 'health']).optional(),
       query: z.string().optional(),
       id: z.string().optional(),
-      answer: z.string().optional(),
+      answer: z
+        .object({
+          text: z.string(),
+          entries: z
+            .array(
+              z.object({
+                id: z.string(),
+                name: z.string(),
+                mimeType: z.string().optional(),
+                isFolder: z.boolean().optional(),
+                webViewLink: z.string().optional(),
+              })
+            )
+            .optional(),
+        })
+        .optional(),
     },
 
-    run: async (params) => {
+    run: async (params, ctx) => {
       const action = params?.action ?? 'checkPending';
 
       switch (action) {
         case 'submit':
-          return promptQueue.submit({ query: params.query });
+          // `ctx.user` is whichever real account this OWM install/process
+          // resolved to (see ToolSet._resolveUser) - carried along so
+          // whichever compute node answers can see whose query this is.
+          return promptQueue.submit({ query: params.query, user: ctx?.user ?? null });
 
         case 'checkPending': {
           heartbeat.recordCheckIn();
@@ -49,14 +67,14 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
             } catch {
               continue; // another compute node already holds a live claim on this one
             }
-            pending.push({ id: prompt.id, query: prompt.query, submittedAt: prompt.submittedAt });
+            pending.push({ id: prompt.id, query: prompt.query, user: prompt.user ?? null, submittedAt: prompt.submittedAt });
           }
           return { pending };
         }
 
         case 'recordAnswer':
           if (!params.id) throw new Error('recordAnswer requires id');
-          if (!params.answer) throw new Error('recordAnswer requires answer');
+          if (!params.answer?.text) throw new Error('recordAnswer requires answer.text');
           return promptQueue.recordAnswer({ id: params.id, answer: params.answer });
 
         case 'getPrompt': {
@@ -101,14 +119,20 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
       const before = await fakeTool.invoke({ action: 'health' });
       assert.strictEqual(before.result.available, false, 'no provider has checked in yet');
 
-      const submitted = await fakeTool.invoke({ action: 'submit', query: 'what is in my root folder?' });
+      // Submitted through a ctx carrying a real user identity (as
+      // ToolSet.invoke would provide) - must be carried onto the prompt
+      // so whichever compute node answers can see whose query this is.
+      const askingUser = { email: 'seth@oneworldmontessori.org', displayName: 'Seth' };
+      const submitted = await fakeTool.invoke({ action: 'submit', query: 'what is in the OWM folder?' }, { user: askingUser });
       assert.ok(submitted.result.id);
       assert.strictEqual(submitted.result.answeredAt, null);
+      assert.deepStrictEqual(submitted.result.user, askingUser);
 
       const checked = await fakeTool.invoke({ action: 'checkPending' });
       assert.strictEqual(checked.result.pending.length, 1);
       assert.strictEqual(checked.result.pending[0].id, submitted.result.id);
-      assert.strictEqual(checked.result.pending[0].query, 'what is in my root folder?');
+      assert.strictEqual(checked.result.pending[0].query, 'what is in the OWM folder?');
+      assert.deepStrictEqual(checked.result.pending[0].user, askingUser, 'the answering compute node must see whose query this is');
 
       const after = await fakeTool.invoke({ action: 'health' });
       assert.strictEqual(after.result.available, true, 'checkPending must record a heartbeat check-in');
@@ -121,18 +145,44 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
       const midway = await fakeTool.invoke({ action: 'getPrompt', id: submitted.result.id });
       assert.strictEqual(midway.result.answered, false);
 
-      const recorded = await fakeTool.invoke({ action: 'recordAnswer', id: submitted.result.id, answer: 'Just a README.md.' });
-      assert.strictEqual(recorded.result.answer, 'Just a README.md.');
+      await assert.rejects(
+        () => fakeTool.invoke({ action: 'recordAnswer', id: submitted.result.id, answer: { text: '' } }),
+        /requires answer\.text/,
+        'an empty text answer must be rejected the same as a missing one'
+      );
+
+      // Structured answer: text plus real Drive entries (a folder listing
+      // or a single file), so the app can render actual clickable Drive
+      // results instead of just a text description.
+      const entries = [
+        { id: 'folder-1', name: 'OWM', mimeType: 'application/vnd.google-apps.folder', isFolder: true },
+        { id: 'file-1', name: 'Handbook.pdf', mimeType: 'application/pdf', isFolder: false, webViewLink: 'https://drive.example/file-1' },
+      ];
+      const recorded = await fakeTool.invoke({
+        action: 'recordAnswer',
+        id: submitted.result.id,
+        answer: { text: 'Found one folder and one file.', entries },
+      });
+      assert.strictEqual(recorded.result.answer.text, 'Found one folder and one file.');
+      assert.deepStrictEqual(recorded.result.answer.entries, entries);
 
       const polled = await fakeTool.invoke({ action: 'getPrompt', id: submitted.result.id });
       assert.strictEqual(polled.result.answered, true);
-      assert.strictEqual(polled.result.answer, 'Just a README.md.');
+      assert.strictEqual(polled.result.answer.text, 'Found one folder and one file.');
+      assert.deepStrictEqual(polled.result.answer.entries, entries);
 
       // Once answered, it must never surface as pending again.
       const checkedAfterAnswer = await fakeTool.invoke({ action: 'checkPending' });
       assert.strictEqual(checkedAfterAnswer.result.pending.length, 0);
 
       await assert.rejects(() => fakeTool.invoke({ action: 'getPrompt', id: 'not-a-real-id' }), /No prompt with id/);
+
+      // A plain (non-Drive) question just omits entries entirely.
+      const plainSubmitted = await fakeTool.invoke({ action: 'submit', query: 'what time is it?' });
+      assert.strictEqual(plainSubmitted.result.user, null, 'submitting with no ctx.user at all must not throw, just record null');
+      await fakeTool.invoke({ action: 'recordAnswer', id: plainSubmitted.result.id, answer: { text: 'No idea, I don\'t track time.' } });
+      const plainPolled = await fakeTool.invoke({ action: 'getPrompt', id: plainSubmitted.result.id });
+      assert.strictEqual(plainPolled.result.answer.entries, undefined);
 
       return { passed: true };
     },
