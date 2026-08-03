@@ -31,19 +31,20 @@ class InMemoryChannel {
     this._seq = 0;
   }
 
-  async announce({ instanceId, displayName, photoLink, tools = [] }) {
-    this._peers.set(instanceId, { instanceId, displayName, photoLink, tools, lastSeenMs: Date.now() });
+  async announce({ instanceId, displayName, photoLink, tools = [], toolSetVersion }) {
+    this._peers.set(instanceId, { instanceId, displayName, photoLink, tools, toolSetVersion, lastSeenMs: Date.now() });
   }
 
   async list() {
     const now = Date.now();
     return [...this._peers.values()]
       .filter((p) => now - p.lastSeenMs <= this.staleAfterMs)
-      .map(({ instanceId, displayName, photoLink, tools, lastSeenMs }) => ({
+      .map(({ instanceId, displayName, photoLink, tools, toolSetVersion, lastSeenMs }) => ({
         instanceId,
         displayName,
         photoLink,
         tools: tools ?? [],
+        toolSetVersion,
         lastSeen: new Date(lastSeenMs).toISOString(),
       }));
   }

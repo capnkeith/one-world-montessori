@@ -14,7 +14,7 @@ const { Tool } = require('../core/Tool');
 function createChannelTool({ channel, instanceId, displayName, secretStore, toolSetRef = () => ({ list: () => [] }) }) {
   return new Tool({
     name: 'channel',
-    version: '1.3.0',
+    version: '1.4.0',
     description: 'Peer rendezvous + messaging: announce presence (real Google name/photo when Drive is set up, plus this instance\'s own tool list), list online peers, send/receive arbitrary data.',
     mcpInputSchema: {
       action: z.enum(['announce', 'list', 'send', 'receive', 'setup']).optional(),
@@ -57,14 +57,16 @@ function createChannelTool({ channel, instanceId, displayName, secretStore, tool
 
         case 'announce': {
           const tools = toolSetRef().list().map((t) => t.name);
-          await channel.announce({ instanceId, displayName: user.displayName, photoLink: user.photoLink, tools });
-          return { announced: true, instanceId, displayName: user.displayName, photoLink: user.photoLink, tools };
+          const toolSetVersion = toolSetRef().version;
+          await channel.announce({ instanceId, displayName: user.displayName, photoLink: user.photoLink, tools, toolSetVersion });
+          return { announced: true, instanceId, displayName: user.displayName, photoLink: user.photoLink, tools, toolSetVersion };
         }
 
         case 'list': {
           const tools = toolSetRef().list().map((t) => t.name);
+          const toolSetVersion = toolSetRef().version;
           return {
-            self: { instanceId, displayName: user.displayName, photoLink: user.photoLink, tools },
+            self: { instanceId, displayName: user.displayName, photoLink: user.photoLink, tools, toolSetVersion },
             peers: await channel.list(),
           };
         }
@@ -90,9 +92,15 @@ function createChannelTool({ channel, instanceId, displayName, secretStore, tool
     internalTest: async ({ call }) => {
       const announced = await call({ action: 'announce' });
       assert.strictEqual(announced.result.announced, true);
+      assert.strictEqual(typeof announced.result.toolSetVersion, 'string', 'announce must report this instance\'s own toolset version');
 
       const listed = await call({ action: 'list' });
       assert.ok(listed.result.peers.some((p) => p.instanceId === instanceId));
+      assert.strictEqual(listed.result.self.toolSetVersion, announced.result.toolSetVersion, 'list must report the same version for self as announce did');
+      assert.ok(
+        listed.result.peers.find((p) => p.instanceId === instanceId).toolSetVersion,
+        'a peer\'s own toolSetVersion must round-trip through announce -> list, not just be present on self'
+      );
 
       const sent = await call({ action: 'send', payload: { hello: 'world' }, type: 'greeting' });
       assert.strictEqual(sent.result.sent, true);

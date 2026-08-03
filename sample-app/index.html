@@ -33,6 +33,7 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.15); padding: 0.4rem 0; min-width: 160px; z-index: 20; font-size: 0.85em;
   }
   #peer-menu .peer-menu-header { padding: 0.2rem 0.75rem 0.4rem; font-weight: 600; border-bottom: 1px solid #eee; margin-bottom: 0.2rem; }
+  #peer-menu .peer-menu-version { padding: 0 0.75rem 0.35rem; color: #888; font-size: 0.85em; }
   #peer-menu .peer-menu-tool { padding: 0.2rem 0.75rem; color: #333; }
   #peer-menu .peer-menu-empty { padding: 0.2rem 0.75rem; color: #888; font-style: italic; }
   #peer-menu .peer-menu-divider { border-top: 1px solid #eee; margin: 0.3rem 0; }
@@ -700,6 +701,11 @@
       header.className = 'peer-menu-header';
       header.textContent = peer.displayName;
       peerMenu.appendChild(header);
+
+      const versionRow = document.createElement('div');
+      versionRow.className = 'peer-menu-version';
+      versionRow.textContent = `MCP version: ${peer.toolSetVersion || 'unknown'}`;
+      peerMenu.appendChild(versionRow);
 
       if (!peer.tools || peer.tools.length === 0) {
         const empty = document.createElement('div');

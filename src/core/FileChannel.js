@@ -40,9 +40,9 @@ class FileChannel {
     fs.writeFileSync(this.filePath, JSON.stringify(state));
   }
 
-  async announce({ instanceId, displayName, photoLink, tools = [] }) {
+  async announce({ instanceId, displayName, photoLink, tools = [], toolSetVersion }) {
     const state = this._read();
-    state.peers[instanceId] = { instanceId, displayName, photoLink, tools, lastSeenMs: Date.now() };
+    state.peers[instanceId] = { instanceId, displayName, photoLink, tools, toolSetVersion, lastSeenMs: Date.now() };
     this._write(state);
   }
 
@@ -51,11 +51,12 @@ class FileChannel {
     const now = Date.now();
     return Object.values(state.peers)
       .filter((p) => now - p.lastSeenMs <= this.staleAfterMs)
-      .map(({ instanceId, displayName, photoLink, tools, lastSeenMs }) => ({
+      .map(({ instanceId, displayName, photoLink, tools, toolSetVersion, lastSeenMs }) => ({
         instanceId,
         displayName,
         photoLink,
         tools: tools ?? [],
+        toolSetVersion,
         lastSeen: new Date(lastSeenMs).toISOString(),
       }));
   }

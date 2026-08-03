@@ -31,6 +31,24 @@ test('announce carries this instance\'s own tool names, visible to other peers v
   assert.deepStrictEqual(aliceEntry.tools, ['drive', 'channel']);
 });
 
+test('announce carries this instance\'s own toolset version, visible to other peers via list', async () => {
+  const channel = new InMemoryChannel();
+  const alice = createChannelTool({
+    channel,
+    instanceId: 'alice',
+    displayName: 'Alice',
+    toolSetRef: () => ({ list: () => [], version: '3.2.1' }),
+  });
+  const bob = createChannelTool({ channel, instanceId: 'bob', displayName: 'Bob' });
+
+  const announced = await alice.invoke({ action: 'announce' });
+  assert.strictEqual(announced.result.toolSetVersion, '3.2.1');
+
+  const { result } = await bob.invoke({ action: 'list' });
+  const aliceEntry = result.peers.find((p) => p.instanceId === 'alice');
+  assert.strictEqual(aliceEntry.toolSetVersion, '3.2.1');
+});
+
 test('a peer with no toolSetRef configured (the default) announces an empty tool list, not an error', async () => {
   const channel = new InMemoryChannel();
   const tool = createChannelTool({ channel, instanceId: 'x', displayName: 'X' });

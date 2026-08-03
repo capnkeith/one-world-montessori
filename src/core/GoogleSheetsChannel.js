@@ -5,8 +5,8 @@ const crypto = require('crypto');
 /**
  * Real cross-machine backend for the Channel interface (src/core/Channel.js),
  * using one shared Google Sheet as the rendezvous point: a `presence` tab
- * (instanceId, displayName, lastSeen, toolsJson, photoLink) and a
- * `messages` tab (seq, id, from, to, type, payloadJson, sentAt).
+ * (instanceId, displayName, lastSeen, toolsJson, photoLink, toolSetVersion)
+ * and a `messages` tab (seq, id, from, to, type, payloadJson, sentAt).
  *
  * This is polling-based — "robust" here means at-least-once delivery via
  * the seq cursor and atomic per-row appends, not low-latency push, and it
@@ -32,7 +32,7 @@ class GoogleSheetsChannel {
   constructor({
     spreadsheetId,
     sheetsClient,
-    presenceRange = 'presence!A:E',
+    presenceRange = 'presence!A:F',
     messagesRange = 'messages!A:G',
   }) {
     if (!spreadsheetId) throw new Error('GoogleSheetsChannel requires spreadsheetId');
@@ -48,27 +48,28 @@ class GoogleSheetsChannel {
     return res.data.values ?? [];
   }
 
-  async announce({ instanceId, displayName, photoLink, tools = [] }) {
+  async announce({ instanceId, displayName, photoLink, tools = [], toolSetVersion }) {
     const rows = await this._getValues(this.presenceRange);
     const nowIso = new Date().toISOString();
     const toolsJson = JSON.stringify(tools);
     const idx = rows.findIndex((r) => r[0] === instanceId);
     const sheetName = this.presenceRange.split('!')[0];
+    const rowValues = [instanceId, displayName, nowIso, toolsJson, photoLink ?? '', toolSetVersion ?? ''];
 
     if (idx === -1) {
       await this.sheets.spreadsheets.values.append({
         spreadsheetId: this.spreadsheetId,
         range: this.presenceRange,
         valueInputOption: 'RAW',
-        requestBody: { values: [[instanceId, displayName, nowIso, toolsJson, photoLink ?? '']] },
+        requestBody: { values: [rowValues] },
       });
     } else {
       const rowNumber = idx + 1;
       await this.sheets.spreadsheets.values.update({
         spreadsheetId: this.spreadsheetId,
-        range: `${sheetName}!A${rowNumber}:E${rowNumber}`,
+        range: `${sheetName}!A${rowNumber}:F${rowNumber}`,
         valueInputOption: 'RAW',
-        requestBody: { values: [[instanceId, displayName, nowIso, toolsJson, photoLink ?? '']] },
+        requestBody: { values: [rowValues] },
       });
     }
   }
@@ -77,14 +78,14 @@ class GoogleSheetsChannel {
     const rows = await this._getValues(this.presenceRange);
     const now = Date.now();
     return rows
-      .map(([instanceId, displayName, lastSeen, toolsJson, photoLink]) => {
+      .map(([instanceId, displayName, lastSeen, toolsJson, photoLink, toolSetVersion]) => {
         let tools = [];
         try {
           tools = toolsJson ? JSON.parse(toolsJson) : [];
         } catch {
           tools = [];
         }
-        return { instanceId, displayName, lastSeen, tools, photoLink: photoLink || undefined };
+        return { instanceId, displayName, lastSeen, tools, photoLink: photoLink || undefined, toolSetVersion: toolSetVersion || undefined };
       })
       .filter((p) => p.lastSeen && now - Date.parse(p.lastSeen) <= staleAfterMs);
   }
