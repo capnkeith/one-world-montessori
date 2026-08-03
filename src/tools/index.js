@@ -17,6 +17,7 @@ const { createPdfTool } = require('./pdf');
 const { createInvoiceTool } = require('./invoice');
 const { createWorkerTool } = require('./worker');
 const { createPromptQueueTool } = require('./promptQueue');
+const { createChatTool } = require('./chat');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -62,6 +63,9 @@ function buildToolSet({
 
   channelTool = createChannelTool({ channel, instanceId, displayName, secretStore, toolSetRef: () => toolSet });
   toolSet.register(channelTool);
+
+  const chatTool = createChatTool({ getChannelTool: () => channelTool, instanceId });
+  toolSet.register(chatTool);
 
   const driveTool = createDriveTool({ secretStore, profile });
   toolSet.register(driveTool);
