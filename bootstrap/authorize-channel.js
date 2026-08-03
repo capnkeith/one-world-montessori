@@ -8,6 +8,18 @@
 // (see src/server/http-server.js). Never fatal to setup: first-run.ps1
 // doesn't check this script's exit code, since presence is a convenience,
 // not core to OWM Drive working at all.
+//
+// This script's only reason to exist is being run directly by a human -
+// unlike first-run.ps1 (a real console app, isTTY reliably true) or
+// Claude Code's `!` passthrough (piped, but cli.js explicitly flags it
+// allowed), some real terminal environments don't report stdout.isTTY
+// truthfully even for a genuinely human-watched session (regression:
+// found live 2026-08-03 - a real user ran this directly and the auto-
+// discovery silently no-opped instead of opening a consent browser).
+// Since being human-run is this file's entire premise, force-allow
+// interactive consent here the same way src/cli.js already does for
+// itself, rather than trusting TTY detection.
+process.env.OWM_ALLOW_INTERACTIVE_CONSENT = '1';
 
 const path = require('path');
 const { createSecretStore } = require('../src/core/SecretStore');
@@ -15,8 +27,10 @@ const { SECRETS_DIR } = require('../src/core/paths');
 const { autoDiscoverChannel } = require('../src/core/autoDiscoverChannel');
 
 async function main() {
+  console.log('[channel] checking shared presence access...');
   const secretStore = createSecretStore(SECRETS_DIR);
   await autoDiscoverChannel({ secretStore });
+  console.log('[channel] done.');
 }
 
 main().catch((err) => {
