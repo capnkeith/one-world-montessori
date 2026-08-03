@@ -6,13 +6,17 @@ const { Tool } = require('../core/Tool');
 const { PromptQueue } = require('../core/PromptQueue');
 
 /**
- * The second job queue (see WORKER.md): the sample app's "Ask Claude" bar
- * submits a prompt here instead of calling claude.query (which bills the
- * Anthropic API per token). A Claude compute node calls `checkPending`,
- * answers each one in plain text, and calls `recordAnswer` - the app
- * polls `getPrompt` for the answer. `health` reports whether any compute
- * node has checked recently, so the app can grey out the bar rather than
- * accept prompts that might sit unanswered.
+ * The second job queue (see WORKER.md): the sample app's Drive-search
+ * bar ("Search OWM Drive with Claude") submits a prompt here instead of
+ * calling claude.query (which bills the Anthropic API per token). A
+ * Claude compute node calls `checkPending`, searches OWM Drive for a
+ * real answer (see WORKER.md's "every query is a Drive search" recipe -
+ * this is not a general chat window, every query gets a Drive search,
+ * with `entries` for what was found or none if genuinely nothing
+ * matched), and calls `recordAnswer` - the app polls `getPrompt` for the
+ * answer. `health` reports whether any compute node has checked
+ * recently, so the app can grey out the bar rather than accept prompts
+ * that might sit unanswered.
  *
  * `nodeId` identifies this instance for the claim/lease model, same
  * convention as the `scheduler` tool.
@@ -24,7 +28,7 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
     name: 'promptQueue',
     version: '1.3.0',
     description:
-      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, reportProgress for a short status update while working, recordAnswer (text plus optional Drive entries), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
+      'Queue for OWM Drive search prompts, answered by a Claude compute node instead of the paid API: submit a query, checkPending to claim and search, reportProgress for a short status update while working, recordAnswer (short text plus the real Drive entries found, or none), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
     mcpInputSchema: {
       action: z.enum(['submit', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'listPrompts', 'health']).optional(),
       query: z.string().optional(),

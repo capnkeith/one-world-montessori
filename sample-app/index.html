@@ -137,7 +137,7 @@
       <input id="search-input" type="text" placeholder="Search files (press Enter)" />
     </div>
     <div class="top-bar" id="ask-claude-bar">
-      <input id="ask-input" type="text" placeholder="Ask Claude..." disabled />
+      <input id="ask-input" type="text" placeholder="Search OWM Drive with Claude..." disabled />
     </div>
 
     <div class="main-split">
@@ -660,10 +660,10 @@
       const available = promptQueueToolPresent && promptQueueHealthy;
       askInput.disabled = !available;
       askInput.placeholder = available
-        ? 'Ask Claude...'
+        ? 'Search OWM Drive with Claude...'
         : promptQueueToolPresent
-          ? 'Ask Claude (no compute node available right now)'
-          : 'Ask Claude (not available yet)';
+          ? 'Search OWM Drive with Claude (no compute node available right now)'
+          : 'Search OWM Drive with Claude (not available yet)';
       askBar.classList.toggle('disabled-bar', !available);
     }
 
