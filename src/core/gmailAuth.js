@@ -7,15 +7,23 @@ const { google } = require('googleapis');
 const DEFAULT_CLIENT_JSON = require('./default-google-oauth-client.json');
 const { isInteractiveConsentAllowed } = require('./interactiveConsent');
 
-// Kept under its own refresh token (`gmail_refresh_token`), separate from
-// Drive's and Secret Manager's, for the same blast-radius reason as
-// everywhere else in this codebase: a leaked token for one purpose
-// shouldn't reach another. Whichever real Google account completes the
-// one-time consent below is the account this sends/reads as — nothing
-// here hardcodes an identity (still undecided as of 2026-08-01 whether
-// this runs as Seth's own account or a dedicated claude@oneworldmontessori.org
-// mailbox Seth is creating).
+// Kept under its own refresh token, separate from Drive's and Secret
+// Manager's, for the same blast-radius reason as everywhere else in
+// this codebase: a leaked token for one purpose shouldn't reach another.
+// Whichever real Google account completes the one-time consent below is
+// the account this sends/reads as — nothing here hardcodes an identity.
+//
+// Supports more than one named Gmail identity (e.g. the shared
+// claude@oneworldmontessori.org mailbox plus Seth's own inbox) — each
+// gets its own refresh token key (`gmail_refresh_token` for the
+// unnamed/default account, `gmail_refresh_token_<account>` for a named
+// one) and its own one-time consent, so authorizing a second account
+// never overwrites or disturbs the first.
 const SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.readonly'];
+
+function refreshTokenKey(account) {
+  return account ? `gmail_refresh_token_${account}` : 'gmail_refresh_token';
+}
 
 /**
  * Same per-user OAuth shape as googleAuth.js's getDriveClient (bundled
@@ -25,13 +33,14 @@ const SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googl
  * the 2026-08-01 incident: a background process must never be able to
  * pop a real browser window on its own.
  */
-async function getGmailClient({ secretStore }) {
+async function getGmailClient({ secretStore, account }) {
   const configuredClientJson = secretStore.get('google_oauth_client');
   const clientJson = configuredClientJson ? JSON.parse(configuredClientJson) : DEFAULT_CLIENT_JSON;
   const { client_id, client_secret } = clientJson.installed;
   const oauth2Client = new google.auth.OAuth2(client_id, client_secret);
 
-  const refreshToken = secretStore.get('gmail_refresh_token');
+  const tokenKey = refreshTokenKey(account);
+  const refreshToken = secretStore.get(tokenKey);
   if (refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
     return google.gmail({ version: 'v1', auth: oauth2Client });
@@ -39,17 +48,18 @@ async function getGmailClient({ secretStore }) {
 
   if (!isInteractiveConsentAllowed()) {
     throw new Error(
-      'No cached Gmail credentials, and this process has no interactive terminal to open a consent browser ' +
-        'from — refusing to try (see the 2026-08-01 runaway-browser incident notes in TODO.md). Run ' +
-        '`node src/cli.js call mail \'{"action":"listMessages"}\'` from a real terminal, signed into whichever ' +
-        'account this should send/read as, to authorize this machine.'
+      `No cached Gmail credentials for ${account ? `the "${account}" account` : 'the default account'}, and this ` +
+        'process has no interactive terminal to open a consent browser from — refusing to try (see the ' +
+        '2026-08-01 runaway-browser incident notes in TODO.md). Run ' +
+        `\`node src/cli.js call mail '{"action":"listMessages"${account ? `,"account":"${account}"` : ''}}'\` from ` +
+        'a real terminal, signed into whichever account this should send/read as, to authorize this machine.'
     );
   }
   const tokens = await runConsentFlow(oauth2Client);
   if (!tokens.refresh_token) {
     throw new Error('Google did not return a refresh token — revoke prior access at myaccount.google.com/permissions and try again.');
   }
-  secretStore.set('gmail_refresh_token', tokens.refresh_token);
+  secretStore.set(tokenKey, tokens.refresh_token);
   oauth2Client.setCredentials(tokens);
   return google.gmail({ version: 'v1', auth: oauth2Client });
 }

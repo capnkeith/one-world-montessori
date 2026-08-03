@@ -103,14 +103,28 @@ function assertAttachmentsAllowed(attachments) {
   }
 }
 function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
-  let cachedClient = null;
+  // Keyed by account name (undefined/'default' for the original unnamed
+  // account) so more than one Gmail identity (e.g. the shared claude@
+  // mailbox plus Seth's own inbox) can be authorized and used side by
+  // side without one's consent overwriting the other's cached client.
+  const cachedClients = new Map();
+
+  async function getClient(account) {
+    const key = account ?? 'default';
+    if (!cachedClients.has(key)) {
+      cachedClients.set(key, await gmailClientFactory({ secretStore, account }));
+    }
+    return cachedClients.get(key);
+  }
 
   return new Tool({
     name: 'mail',
-    version: '1.1.0',
-    description: 'Real Gmail send/read for the account that authorized it — sending emails and checking for replies.',
+    version: '1.2.0',
+    description:
+      'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default.',
     mcpInputSchema: {
       action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami']).optional(),
+      account: z.string().optional(),
       to: z.string().optional(),
       cc: z.union([z.string(), z.array(z.string())]).optional(),
       subject: z.string().optional(),
@@ -134,10 +148,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
     run: async (params) => {
       const action = params?.action ?? 'listMessages';
-
-      if (!cachedClient) {
-        cachedClient = await gmailClientFactory({ secretStore });
-      }
+      const client = await getClient(params?.account);
 
       if (action === 'send') {
         if (!params.to) throw new Error('send requires to');
@@ -155,12 +166,12 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
           'utf8'
         ).toString('base64url');
         const requestBody = params.threadId ? { raw, threadId: params.threadId } : { raw };
-        const res = await cachedClient.users.messages.send({ userId: 'me', requestBody });
+        const res = await client.users.messages.send({ userId: 'me', requestBody });
         return { sent: true, id: res.data.id, threadId: res.data.threadId };
       }
 
       if (action === 'listMessages') {
-        const res = await cachedClient.users.messages.list({
+        const res = await client.users.messages.list({
           userId: 'me',
           q: params.query ?? '',
           maxResults: params.maxResults ?? 20,
@@ -170,18 +181,18 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
       if (action === 'getMessage') {
         if (!params.id) throw new Error('getMessage requires id');
-        const res = await cachedClient.users.messages.get({ userId: 'me', id: params.id, format: 'full' });
+        const res = await client.users.messages.get({ userId: 'me', id: params.id, format: 'full' });
         return { message: extractMessage(res.data) };
       }
 
       if (action === 'getThread') {
         if (!params.id) throw new Error('getThread requires id');
-        const res = await cachedClient.users.threads.get({ userId: 'me', id: params.id, format: 'full' });
+        const res = await client.users.threads.get({ userId: 'me', id: params.id, format: 'full' });
         return { threadId: res.data.id, messages: (res.data.messages ?? []).map(extractMessage) };
       }
 
       if (action === 'whoami') {
-        const res = await cachedClient.users.getProfile({ userId: 'me' });
+        const res = await client.users.getProfile({ userId: 'me' });
         return { emailAddress: res.data.emailAddress };
       }
 
@@ -256,9 +267,19 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
           getProfile: async () => ({ data: { emailAddress: 'claude@oneworldmontessori.org' } }),
         },
       };
+      const factoryCalls = [];
       const fakeTool = createMailTool({
         secretStore: { get: () => null, set: () => {} },
-        gmailClientFactory: async () => fakeClient,
+        gmailClientFactory: async ({ account }) => {
+          factoryCalls.push(account);
+          return {
+            ...fakeClient,
+            users: {
+              ...fakeClient.users,
+              getProfile: async () => ({ data: { emailAddress: account ? `${account}@oneworldmontessori.org` : 'claude@oneworldmontessori.org' } }),
+            },
+          };
+        },
       });
 
       const sent = await fakeTool.invoke({
@@ -356,6 +377,20 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc', source: 'job-defined' }],
       });
       assert.strictEqual(jobDefinedSend.result.sent, true, 'job-defined attachments are allowed through');
+
+      // Multi-account: a named account gets its own client, cached
+      // separately, without disturbing the default account's client.
+      const defaultWho = await fakeTool.invoke({ action: 'whoami' });
+      assert.strictEqual(defaultWho.result.emailAddress, 'claude@oneworldmontessori.org');
+      const sethWho = await fakeTool.invoke({ action: 'whoami', account: 'seth' });
+      assert.strictEqual(sethWho.result.emailAddress, 'seth@oneworldmontessori.org');
+      await fakeTool.invoke({ action: 'whoami' });
+      await fakeTool.invoke({ action: 'whoami', account: 'seth' });
+      assert.deepStrictEqual(
+        factoryCalls,
+        [undefined, 'seth'],
+        'each distinct account must only build its client once (cached thereafter), and the default/named accounts must not collide'
+      );
 
       return { passed: true };
     },
