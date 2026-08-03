@@ -784,6 +784,58 @@
     const peerIconsEl = document.getElementById('peer-icons');
     const peerMenu = document.getElementById('peer-menu');
 
+    // Right-clicking the OWM logo shows global server info (this
+    // install's own version/health), not the browser's native
+    // "image properties" menu — reuses the same peer-menu popup, just
+    // with a different content-building function.
+    async function showServerMenu(e) {
+      e.preventDefault();
+      peerMenu.innerHTML = '';
+
+      const header = document.createElement('div');
+      header.className = 'peer-menu-header';
+      header.textContent = 'OWM Drive Server';
+      peerMenu.appendChild(header);
+
+      try {
+        const body = await invoke('doctor', {});
+        const d = body.result;
+        const rows = [
+          `Server version: ${d.serverVersion}`,
+          `Toolset version: ${d.toolSetVersion}`,
+          `Runtime: Node ${d.runtime.node} (${d.runtime.platform})`,
+          `Google Drive linked: ${d.credentials.googleOAuthPresent ? 'yes' : 'no'}`,
+          `Online peers: ${d.presence ? d.presence.onlinePeerCount : 'n/a'}`,
+        ];
+        for (const text of rows) {
+          const row = document.createElement('div');
+          row.className = 'peer-menu-version';
+          row.textContent = text;
+          peerMenu.appendChild(row);
+        }
+      } catch (err) {
+        const errRow = document.createElement('div');
+        errRow.className = 'peer-menu-empty';
+        errRow.textContent = `Could not load server info: ${err.message}`;
+        peerMenu.appendChild(errRow);
+      }
+
+      const divider = document.createElement('div');
+      divider.className = 'peer-menu-divider';
+      peerMenu.appendChild(divider);
+
+      const statusAction = document.createElement('div');
+      statusAction.className = 'peer-menu-action';
+      statusAction.textContent = 'Open status dashboard';
+      statusAction.addEventListener('click', () => window.open(`${BASE_URL}/status.html`, '_blank'));
+      peerMenu.appendChild(statusAction);
+
+      peerMenu.style.left = `${e.clientX}px`;
+      peerMenu.style.top = `${e.clientY}px`;
+      peerMenu.style.display = 'block';
+    }
+    document.getElementById('app-logo').addEventListener('contextmenu', showServerMenu);
+
     function hashColor(str) {
       let hash = 0;
       for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);

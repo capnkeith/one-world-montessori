@@ -295,6 +295,65 @@ session, check it periodically (every few minutes), not just once at
 the start — otherwise the bar greys itself out for anyone using the
 app, even though nothing is actually broken.
 
+## The support-ticket queue (`supportQueue`)
+
+Unlike the other two queues, there's no separate submission mechanism —
+anyone at the org can just email **claude@** directly with **"tech
+support"** or **"general"** somewhere in the subject line, and a Claude
+compute node answers it by replying to that same email thread. No app,
+no bar, no prior setup.
+
+1. Check for new/pending tickets:
+
+   ```
+   curl -s -X POST http://127.0.0.1:39390/tools/supportQueue/invoke \
+     -H "Content-Type: application/json" -d '{"action":"checkPending"}'
+   ```
+
+   Internally this searches claude@'s real inbox for matching subjects,
+   turns any not-already-seen message into a ticket (deduplicated by
+   Gmail message id, so re-scanning never creates a duplicate), then
+   claims whatever's still unresolved — same claim/lease shape as the
+   other two queues (10-minute lease, failover if a node disappears
+   mid-ticket).
+
+2. If `result.pending` is empty, there's nothing to do right now.
+
+3. If it's non-empty, each entry is `{id, category, from, subject, body,
+   receivedAt}`. `category` is either `'tech-support'` or `'general'` —
+   use it to decide how to help:
+
+   - **`tech-support`** — this is someone stuck on OWM Drive itself
+     (install/update problems, presence/peer issues, the app not
+     working right). Start with `doctor` to see real install health
+     (versions, prerequisites, presence) rather than guessing from the
+     email text alone. Walk them through concrete steps in plain,
+     non-technical language (mirror how Rebecca's real onboarding issues
+     got resolved in practice: one simple copy-pasteable command at a
+     time, never assume comfort with a terminal). If you genuinely can't
+     tell what's wrong from what they wrote, ask one clarifying question
+     back rather than guessing — this is a real person waiting on a
+     real reply, not a queue that benefits from a fast wrong answer.
+   - **`general`** — a general question about the org, its Drive, or
+     anything else reasonable to help with. Same approach as the
+     prompt-answering queue's Drive-centered guidance above: actually
+     search `drive` for real before answering, respect the asker's own
+     account view (compare `drive`'s `whoami` against the sender's
+     email the same way), and don't guess from memory.
+
+   Reply via the `supportQueue` tool's `recordAnswer` action:
+   `{action: 'recordAnswer', id, replyText}` — this sends the actual
+   email reply (correctly threaded onto the original message) and
+   resolves the ticket in one step. Plain text only; the same DLP
+   guardrail as everywhere else applies — never attach a raw Drive file,
+   only something already rendered/job-defined (in practice, this queue
+   has no attachment mechanism at all right now, so this is moot unless
+   that changes later).
+
+4. Same multi-node safety as the other two queues — `checkPending`
+   claims each ticket before including it in `result.pending`, so two
+   nodes checking at once never both answer the same email.
+
 ## Future queues
 
 More job queues may get added here over time as OWM grows — this file

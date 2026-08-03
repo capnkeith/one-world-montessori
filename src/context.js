@@ -76,6 +76,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
   // specific) - reused as-is for the prompt queue's own separate file
   // rather than duplicating an identical class under a different name.
   const promptStore = new JobStore(path.join(stateRoot, 'prompts.json'));
+  const supportStore = new JobStore(path.join(stateRoot, 'support-tickets.json'));
   const workerHeartbeat = new WorkerHeartbeat(path.join(stateRoot, 'worker-heartbeat.json'));
   const invoiceCounter = new InvoiceCounter(path.join(stateRoot, 'invoice-counter.json'));
   const invoiceLogoBuffer = fs.existsSync(INVOICE_LOGO_PATH) ? fs.readFileSync(INVOICE_LOGO_PATH) : null;
@@ -92,6 +93,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
     persistCatalogSnapshot,
     jobStore,
     promptStore,
+    supportStore,
     workerHeartbeat,
     invoiceCounter,
     invoiceLogoBuffer,
@@ -106,6 +108,7 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
     catalog,
     jobStore,
     promptStore,
+    supportStore,
     workerHeartbeat,
     stateRoot,
     instanceId: profileData.instanceId,

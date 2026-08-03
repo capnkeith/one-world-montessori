@@ -18,6 +18,7 @@ const { createInvoiceTool } = require('./invoice');
 const { createWorkerTool } = require('./worker');
 const { createPromptQueueTool } = require('./promptQueue');
 const { createChatTool } = require('./chat');
+const { createSupportQueueTool } = require('./supportQueue');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -36,6 +37,7 @@ function buildToolSet({
   persistCatalogSnapshot,
   jobStore,
   promptStore,
+  supportStore,
   workerHeartbeat,
   invoiceCounter,
   invoiceLogoBuffer,
@@ -120,6 +122,9 @@ function buildToolSet({
 
   const promptQueueTool = createPromptQueueTool({ promptStore, heartbeat: workerHeartbeat, nodeId: instanceId });
   toolSet.register(promptQueueTool);
+
+  const supportQueueTool = createSupportQueueTool({ supportStore, getMailTool: () => mailTool, nodeId: instanceId });
+  toolSet.register(supportQueueTool);
 
   return toolSet;
 }
