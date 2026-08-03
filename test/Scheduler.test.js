@@ -269,6 +269,129 @@ test('cancelJob stops a job from ever running again', async () => {
   assert.strictEqual(dueResult.ranCount, 0, 'a cancelled job must never be picked up by runDueJobs');
 });
 
+test('pauseJob holds a job so runDueJobs and runJob both skip it, without cancelling it', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    now: new Date(2026, 6, 1),
+  });
+
+  const paused = scheduler.pauseJob(job.id);
+  assert.strictEqual(paused.status, 'paused');
+
+  const dueResult = await scheduler.runDueJobs({ handlers: { a: async () => {} }, now: new Date(2027, 0, 1) });
+  assert.strictEqual(dueResult.ranCount, 0, 'a paused job must never be picked up by the automatic tick');
+
+  await assert.rejects(() => scheduler.runJob(job.id, { handlers: { a: async () => {} } }), /already claimed/i);
+});
+
+test('resumeJob reverses pauseJob and recomputes nextRunAt', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'monthly', dayOfMonth: 2, hour: 9, minute: 0 },
+    now: new Date(2026, 7, 1, 8, 0),
+  });
+  scheduler.pauseJob(job.id);
+
+  const resumed = scheduler.resumeJob(job.id, { now: new Date(2026, 7, 1, 10, 0) });
+  assert.strictEqual(resumed.status, 'scheduled');
+  assert.ok(resumed.nextRunAt, 'resuming must leave a real nextRunAt in place, not null');
+});
+
+test('pauseJob refuses to hold a job that is not currently scheduled (e.g. already claimed or cancelled)', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    now: new Date(2026, 6, 1),
+  });
+  scheduler.cancelJob(job.id);
+  assert.throws(() => scheduler.pauseJob(job.id), /can only be paused from 'scheduled'/);
+});
+
+test('resumeJob refuses to resume a job that is not currently paused', () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    now: new Date(2026, 6, 1),
+  });
+  assert.throws(() => scheduler.resumeJob(job.id), /is not paused/);
+});
+
+test('testJob calls the handler with dryRun: true and default testTo/testCc (Seth, cc claude@) but never claims, never mutates history or status', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    params: { to: 'someone@example.com' },
+    now: new Date(2026, 6, 1),
+  });
+
+  let seenParams = null;
+  const result = await scheduler.testJob(job.id, {
+    handlers: {
+      a: async (params) => {
+        seenParams = params;
+        return { previewed: true };
+      },
+    },
+  });
+
+  assert.deepStrictEqual(result, { previewed: true });
+  assert.deepStrictEqual(
+    seenParams,
+    { to: 'someone@example.com', dryRun: true, testTo: 'seth@oneworldmontessori.org', testCc: 'claude@oneworldmontessori.org' },
+    'the handler must see dryRun: true plus the default test recipient/cc merged into its real params'
+  );
+
+  const after = scheduler.getJob(job.id);
+  assert.strictEqual(after.status, 'scheduled', 'testJob must never claim the job');
+  assert.strictEqual(after.history.length, 0, 'testJob must never record a history entry');
+  assert.strictEqual(after.claimedBy, null);
+});
+
+test('testJob lets the test recipient/cc be overridden away from the Seth/claude@ default', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    now: new Date(2026, 6, 1),
+  });
+
+  let seenParams = null;
+  await scheduler.testJob(job.id, {
+    to: 'override-to@example.com',
+    cc: 'override-cc@example.com',
+    handlers: { a: async (params) => (seenParams = params) },
+  });
+
+  assert.strictEqual(seenParams.testTo, 'override-to@example.com');
+  assert.strictEqual(seenParams.testCc, 'override-cc@example.com');
+});
+
+test('testJob works on a paused job too, since it never claims anything', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({
+    type: 'a',
+    schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() },
+    now: new Date(2026, 6, 1),
+  });
+  scheduler.pauseJob(job.id);
+
+  const result = await scheduler.testJob(job.id, { handlers: { a: async () => ({ previewed: true }) } });
+  assert.deepStrictEqual(result, { previewed: true });
+  assert.strictEqual(scheduler.getJob(job.id).status, 'paused', 'testJob must not disturb the paused status');
+});
+
+test('testJob throws a clear error when no handler is registered for the job type', async () => {
+  const scheduler = new Scheduler({ store: fakeStore() });
+  const job = scheduler.addJob({ type: 'unregistered-type', schedule: { type: 'once', at: new Date(2026, 7, 1).toISOString() } });
+  await assert.rejects(() => scheduler.testJob(job.id, { handlers: {} }), /No handler registered/);
+});
+
 test('recordFeedback attaches feedback to a specific run without disturbing others', async () => {
   const scheduler = new Scheduler({ store: fakeStore() });
   const job = scheduler.addJob({

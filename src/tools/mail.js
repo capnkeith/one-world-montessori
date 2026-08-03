@@ -124,7 +124,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
   return new Tool({
     name: 'mail',
-    version: '1.4.0',
+    version: '1.5.0',
     description:
       'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default. Call `authorize` once per account before anything else.',
     mcpInputSchema: {
@@ -426,9 +426,11 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       });
       assert.strictEqual(jobDefinedSend.result.sent, true, 'job-defined attachments are allowed through');
 
-      // forward: a genuine "forward as attachment" (message/rfc822), not a
-      // generic file attachment - defaults the subject from the original,
-      // and the original's real headers/body appear verbatim in what's sent.
+      // forward: a genuine "forward as attachment" (a base64 message/rfc822
+      // .eml file, not literal inline text — see mime.js's header for why:
+      // Gmail's own send API silently drops nested attachments from a
+      // literal-text message/rfc822 part) - defaults the subject from the
+      // original, and the original survives byte-for-byte once decoded.
       const forwarded = await fakeTool.invoke({
         action: 'forward',
         id: 'msg-to-forward',
@@ -439,8 +441,12 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       assert.strictEqual(forwarded.result.forwardedSubject, 'Your receipt from Anthropic, PBC #1234');
       const forwardedRaw = Buffer.from(sentRawMessages[sentRawMessages.length - 1], 'base64url').toString('utf8');
       assert.match(forwardedRaw, /Subject: Fwd: Your receipt from Anthropic, PBC #1234/);
-      assert.match(forwardedRaw, /Content-Type: message\/rfc822/);
-      assert.match(forwardedRaw, /Receipt body here\./, 'the original message content must appear verbatim');
+      assert.match(forwardedRaw, /Content-Type: message\/rfc822; name="original-message\.eml"/);
+      assert.match(forwardedRaw, /Content-Transfer-Encoding: base64/);
+      assert.doesNotMatch(forwardedRaw, /Receipt body here\./, 'the original must be opaque base64, never literal text, in what actually gets sent');
+      const eml = forwardedRaw.split('Content-Disposition: attachment; filename="original-message.eml"\r\n\r\n')[1].split(/\r\n--/)[0];
+      const decodedOriginal = Buffer.from(eml.replace(/\r\n/g, ''), 'base64').toString('utf8');
+      assert.match(decodedOriginal, /Receipt body here\./, 'the original message content must survive byte-for-byte once decoded back out');
       assert.match(forwardedRaw, /Forwarding along\./);
 
       // Multi-account: a named account gets its own client, cached

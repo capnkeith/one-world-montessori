@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { buildJobHandlers } = require('../src/tools/jobHandlers');
 
-function fakeMailTool({ messages = [] } = {}) {
+function fakeMailTool({ messages = [], messageDetails = {} } = {}) {
   const calls = [];
   return {
     calls,
@@ -12,6 +12,13 @@ function fakeMailTool({ messages = [] } = {}) {
       calls.push(params);
       if (params.action === 'listMessages') {
         return { result: { messages } };
+      }
+      if (params.action === 'getMessage') {
+        return {
+          result: {
+            message: messageDetails[params.id] ?? { id: params.id, from: 'invoice+statements@mail.anthropic.com', subject: 'Your receipt from Anthropic, PBC #1234' },
+          },
+        };
       }
       if (params.action === 'forward') {
         return { result: { sent: true, id: 'sent-1', threadId: params.threadId ?? 'new-thread' } };
@@ -62,6 +69,11 @@ test('send-monthly-invoice-email forwards the latest matching message as-is when
   assert.strictEqual(result.forwardedMessageId, 'msg-1');
   const listCall = mailTool.calls.find((c) => c.action === 'listMessages');
   assert.match(listCall.query, /anthropic/);
+  assert.match(
+    listCall.query,
+    /-from:claude@oneworldmontessori\.org/,
+    'regression: without this, a test-mode cc to claude@ gets found by the next search and re-forwarded ("Fwd: Fwd: ...") instead of the real source message. -from:me was tried first and verified NOT to work against real Gmail.'
+  );
   const forwardCall = mailTool.calls.find((c) => c.action === 'forward');
   assert.strictEqual(forwardCall.id, 'msg-1');
   assert.strictEqual(forwardCall.to, 'businessmanager@oneworldmontessori.org');
@@ -155,6 +167,117 @@ test('pester-for-missing-invoice emails the pester list when still nothing is fo
   assert.match(sendCall.to, /seth@oneworldmontessori\.org/);
   assert.match(sendCall.to, /seth\.keith@citrix\.com/);
   assert.strictEqual(schedulerTool.calls.some((c) => c.action === 'cancelJob'), false, 'must not cancel itself while still missing');
+});
+
+test('send-monthly-invoice-email dryRun previews the found message and intended forward without actually forwarding', async () => {
+  const mailTool = fakeMailTool({
+    messages: [{ id: 'msg-1', threadId: 'thread-1' }],
+    messageDetails: { 'msg-1': { id: 'msg-1', from: 'invoice+statements@mail.anthropic.com', subject: 'Your receipt from Anthropic, PBC #1234' } },
+  });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'job-1', label: 'Monthly invoice', history: [] };
+  const result = await handlers['send-monthly-invoice-email']({ to: 'businessmanager@oneworldmontessori.org', dryRun: true }, job);
+
+  assert.strictEqual(result.dryRun, true);
+  assert.strictEqual(result.wouldForward, true);
+  assert.strictEqual(result.foundMessage.subject, 'Your receipt from Anthropic, PBC #1234');
+  assert.strictEqual(result.to, 'businessmanager@oneworldmontessori.org');
+  assert.strictEqual(mailTool.calls.some((c) => c.action === 'forward'), false, 'dryRun must never actually forward');
+  assert.strictEqual(schedulerTool.calls.length, 0, 'dryRun must never touch the scheduler');
+});
+
+test('send-monthly-invoice-email dryRun reports it would start pestering, without actually creating or running a pester job', async () => {
+  const mailTool = fakeMailTool({ messages: [] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'job-1', label: 'Monthly invoice', history: [] };
+  const result = await handlers['send-monthly-invoice-email']({ to: 'businessmanager@oneworldmontessori.org', dryRun: true }, job);
+
+  assert.strictEqual(result.dryRun, true);
+  assert.strictEqual(result.wouldForward, false);
+  assert.strictEqual(result.wouldStartPestering, true);
+  assert.strictEqual(schedulerTool.calls.length, 0, 'dryRun must never create or run a real pester job');
+});
+
+test('pester-for-missing-invoice dryRun previews the stop-pestering outcome without cancelling itself', async () => {
+  const mailTool = fakeMailTool({ messages: [{ id: 'msg-3', threadId: 'thread-3' }] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'pester-1', params: { to: 'businessmanager@oneworldmontessori.org' }, history: [] };
+  const result = await handlers['pester-for-missing-invoice']({ ...job.params, dryRun: true }, job);
+
+  assert.strictEqual(result.wouldStopPestering, true);
+  assert.strictEqual(schedulerTool.calls.some((c) => c.action === 'cancelJob'), false, 'dryRun must never actually cancel the pester job');
+});
+
+test('pester-for-missing-invoice dryRun previews still-missing without emailing the pester list', async () => {
+  const mailTool = fakeMailTool({ messages: [] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'pester-1', params: { to: 'businessmanager@oneworldmontessori.org' }, history: [] };
+  const result = await handlers['pester-for-missing-invoice']({ ...job.params, dryRun: true }, job);
+
+  assert.strictEqual(result.wouldPester, true);
+  assert.strictEqual(mailTool.calls.some((c) => c.action === 'send'), false, 'dryRun must never actually email the pester list');
+});
+
+test('send-monthly-invoice-email test mode (testTo set) actually forwards for real, redirected to the test recipient instead of the real one', async () => {
+  const mailTool = fakeMailTool({
+    messages: [{ id: 'msg-1', threadId: 'thread-1' }],
+    messageDetails: { 'msg-1': { id: 'msg-1', from: 'invoice+statements@mail.anthropic.com', subject: 'Your receipt from Anthropic, PBC #1234' } },
+  });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'job-1', label: 'Monthly invoice', history: [] };
+  const result = await handlers['send-monthly-invoice-email'](
+    { to: 'businessmanager@oneworldmontessori.org', dryRun: true, testTo: 'seth@oneworldmontessori.org', testCc: 'claude@oneworldmontessori.org' },
+    job
+  );
+
+  assert.strictEqual(result.sent, true, 'test mode must actually send, not just describe what would happen');
+  assert.strictEqual(result.testMode, true);
+  assert.strictEqual(result.realTo, 'businessmanager@oneworldmontessori.org', 'must record what the real recipient would have been');
+  const forwardCall = mailTool.calls.find((c) => c.action === 'forward');
+  assert.strictEqual(forwardCall.to, 'seth@oneworldmontessori.org', 'must send to the test recipient, never the real one');
+  assert.strictEqual(forwardCall.cc, 'claude@oneworldmontessori.org');
+  assert.strictEqual(schedulerTool.calls.length, 0, 'test mode must never touch the scheduler');
+});
+
+test('pester-for-missing-invoice test mode forwards for real to the test recipient but does not actually cancel itself', async () => {
+  const mailTool = fakeMailTool({ messages: [{ id: 'msg-3', threadId: 'thread-3' }] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'pester-1', params: { to: 'businessmanager@oneworldmontessori.org' }, history: [] };
+  const result = await handlers['pester-for-missing-invoice'](
+    { ...job.params, dryRun: true, testTo: 'seth@oneworldmontessori.org', testCc: 'claude@oneworldmontessori.org' },
+    job
+  );
+
+  assert.strictEqual(result.sent, true);
+  assert.strictEqual(result.testMode, true);
+  assert.strictEqual(result.wouldStopPestering, true);
+  const forwardCall = mailTool.calls.find((c) => c.action === 'forward');
+  assert.strictEqual(forwardCall.to, 'seth@oneworldmontessori.org');
+  assert.strictEqual(schedulerTool.calls.some((c) => c.action === 'cancelJob'), false, 'test mode must never actually cancel the pester job');
+});
+
+test('send-recurring-test-email dryRun previews without actually sending', async () => {
+  const mailTool = fakeMailTool();
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const result = await handlers['send-recurring-test-email']({ to: 'seth@oneworldmontessori.org', dryRun: true });
+
+  assert.strictEqual(result.wouldSend, true);
+  assert.strictEqual(result.to, 'seth@oneworldmontessori.org');
+  assert.strictEqual(mailTool.calls.length, 0, 'dryRun must never call the real mail tool at all');
 });
 
 test('send-recurring-test-email sends a plain no-attachment email with sensible defaults', async () => {

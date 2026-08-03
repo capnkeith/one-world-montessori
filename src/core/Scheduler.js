@@ -27,7 +27,10 @@ const DEFAULT_LEASE_MS = 10 * 60_000; // 10 minutes
  * `status`: 'scheduled' (waiting, or due and unclaimed) | 'claimed' (a
  * node is running it right now) | 'stuck' (a claim's lease expired
  * without completing, and retryPolicy said not to auto-retry - needs a
- * human) | 'cancelled' | 'completed' (one-off jobs only, once run).
+ * human) | 'paused' (deliberately held by a human - never claimed by
+ * claimNextDueJob OR by a manual runJob/claimJob call, but reversible
+ * via resumeJob, unlike 'cancelled') | 'cancelled' | 'completed'
+ * (one-off jobs only, once run).
  *
  * `retryPolicy`: 'idempotent' (default) - safe to hand to another node
  * automatically if the claiming node disappears mid-run. 'at-most-once'
@@ -117,6 +120,35 @@ class Scheduler {
     if (!job) throw new Error(`No job with id ${id}`);
     job.status = 'cancelled';
     job.nextRunAt = null;
+    this.store.save(jobs);
+    return job;
+  }
+
+  /**
+   * Holds a scheduled job without cancelling it — unlike cancelJob, this
+   * is meant to be temporary and reversible via resumeJob. A paused job
+   * is invisible to both claimNextDueJob (the automatic tick) and
+   * claimJob/runJob (a manual force-run), since both only ever claim a
+   * job whose status is exactly 'scheduled'.
+   */
+  pauseJob(id) {
+    const jobs = this.store.load();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) throw new Error(`No job with id ${id}`);
+    if (job.status !== 'scheduled') throw new Error(`Job ${id} can only be paused from 'scheduled' (currently '${job.status}')`);
+    job.status = 'paused';
+    this.store.save(jobs);
+    return job;
+  }
+
+  /** Reverses pauseJob — recomputes nextRunAt so a long pause doesn't leave a stale date behind. */
+  resumeJob(id, { now = new Date() } = {}) {
+    const jobs = this.store.load();
+    const job = jobs.find((j) => j.id === id);
+    if (!job) throw new Error(`No job with id ${id}`);
+    if (job.status !== 'paused') throw new Error(`Job ${id} is not paused (currently '${job.status}')`);
+    job.status = 'scheduled';
+    job.nextRunAt = computeNextRun(job.schedule, now).toISOString();
     this.store.save(jobs);
     return job;
   }
@@ -276,6 +308,29 @@ class Scheduler {
       }
     }
     return { releasedCount: released.length, stuckCount: stuck.length, released, stuck };
+  }
+
+  /**
+   * Calls a job's handler as a test run — no claim, no lease, no history
+   * entry, no change to the job itself. The handler receives the same
+   * params as a real run plus `dryRun: true` (suppresses any job-store
+   * side effect, like creating a pester job — testing must never spawn
+   * real scheduler state) and `testTo`/`testCc` (defaulting to Seth,
+   * cc claude@, both overridable): a handler that actually sends
+   * something is expected to redirect the real send to these addresses
+   * instead of the job's real recipient, and still go through with it
+   * for real. This is deliberate — a human reading a JSON description of
+   * an email is not the same as actually receiving it, and Seth asked to
+   * be able to check the literal rendered email, not just a preview of
+   * its shape. Works regardless of job status (scheduled, paused, even
+   * stuck) since nothing about the job itself is ever mutated.
+   */
+  async testJob(id, { handlers, to = 'seth@oneworldmontessori.org', cc = 'claude@oneworldmontessori.org' }) {
+    const job = this.getJob(id);
+    if (!job) throw new Error(`No job with id ${id}`);
+    const handler = handlers[job.type];
+    if (!handler) throw new Error(`No handler registered for job type "${job.type}"`);
+    return handler({ ...job.params, dryRun: true, testTo: to, testCc: cc }, job);
   }
 
   /** Forces one job to run right now, regardless of its schedule. */

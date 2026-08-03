@@ -99,7 +99,7 @@ test('a custom boundary is used verbatim instead of a random one, for determinis
   assert.match(raw, /--fixed-boundary-123--/);
 });
 
-test('buildForwardMimeMessage embeds the original as a real message/rfc822 part, not a generic attachment', () => {
+test('buildForwardMimeMessage attaches the original as a base64 message/rfc822 .eml file (regression: 2026-08-03 — Gmail\'s send API silently dropped nested attachments when the original was embedded as literal inline text instead)', () => {
   const originalRaw = 'From: someone@example.com\r\nSubject: Original subject\r\n\r\nOriginal body text.';
   const raw = buildForwardMimeMessage({
     to: 'johanna@oneworldmontessori.org',
@@ -112,12 +112,16 @@ test('buildForwardMimeMessage embeds the original as a real message/rfc822 part,
 
   assert.match(raw, /^To: johanna@oneworldmontessori\.org/);
   assert.match(raw, /^Cc: seth@oneworldmontessori\.org/m);
-  assert.match(raw, /Content-Type: message\/rfc822/);
-  assert.match(raw, /Content-Disposition: inline/);
+  assert.match(raw, /Content-Type: message\/rfc822; name="original-message\.eml"/);
+  assert.match(raw, /Content-Transfer-Encoding: base64/);
+  assert.match(raw, /Content-Disposition: attachment; filename="original-message\.eml"/);
   assert.match(raw, /Forwarding this along\./);
-  // The original message's own headers/body must appear verbatim, not re-encoded as base64 attachment bytes.
-  assert.match(raw, /From: someone@example\.com/);
-  assert.match(raw, /Subject: Original subject/);
-  assert.match(raw, /Original body text\./);
-  assert.doesNotMatch(raw, /Content-Disposition: attachment/, 'a forward is not a generic file attachment');
+  // The original is opaque base64 now (that's the whole point — Gmail
+  // must never try to re-parse it), so it must NOT appear as literal text...
+  assert.doesNotMatch(raw, /From: someone@example\.com/);
+  assert.doesNotMatch(raw, /Original body text\./);
+  // ...but must survive intact once decoded back out.
+  const attachmentBase64 = raw.split('Content-Disposition: attachment; filename="original-message.eml"\r\n\r\n')[1].split('\r\n--fixed-boundary--')[0];
+  const decoded = Buffer.from(attachmentBase64.replace(/\r\n/g, ''), 'base64').toString('utf8');
+  assert.strictEqual(decoded, originalRaw, 'the original must be byte-for-byte recoverable from the base64 attachment');
 });

@@ -23,9 +23,9 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
 
   return new Tool({
     name: 'scheduler',
-    version: '2.3.0',
+    version: '2.6.0',
     description:
-      'Generic calendar-based background job scheduling with a claim/lease model for safe multi-node execution: add/list/get/cancel/run jobs, reclaim stale leases, claim/record feedback on a reply-bearing run.',
+      'Generic calendar-based background job scheduling with a claim/lease model for safe multi-node execution: add/list/get/cancel/pause/resume/run/test jobs, reclaim stale leases, claim/record feedback on a reply-bearing run.',
     mcpInputSchema: {
       action: z
         .enum([
@@ -34,7 +34,10 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
           'getJob',
           'updateJob',
           'cancelJob',
+          'pauseJob',
+          'resumeJob',
           'runJob',
+          'testJob',
           'runDueJobs',
           'reclaimStaleLeases',
           'recordFeedback',
@@ -52,6 +55,10 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
       id: z.string().optional(),
       runIndex: z.number().optional(),
       feedback: z.any().optional(),
+      // testJob only: redirects a real send to a safe test recipient
+      // instead of the job's real one. Defaults to Seth, cc claude@.
+      to: z.string().optional(),
+      cc: z.string().optional(),
     },
 
     run: async (params) => {
@@ -94,9 +101,32 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
           if (!params.id) throw new Error('cancelJob requires id');
           return scheduler.cancelJob(params.id);
 
+        case 'pauseJob':
+          if (!params.id) throw new Error('pauseJob requires id');
+          return scheduler.pauseJob(params.id);
+
+        case 'resumeJob':
+          if (!params.id) throw new Error('resumeJob requires id');
+          return scheduler.resumeJob(params.id);
+
         case 'runJob':
           if (!params.id) throw new Error('runJob requires id');
           return scheduler.runJob(params.id, { handlers, nodeId });
+
+        case 'testJob':
+          // Never claims, never mutates the job, never creates real
+          // scheduler side effects (the handler is expected to honor
+          // dryRun: true for those) — but an actual send DOES go out for
+          // real, redirected to a safe test recipient (`to`/`cc`,
+          // defaulting to Seth/claude@) instead of the job's real
+          // recipient. Lets a human actually receive and check the
+          // literal email before letting the real job run.
+          if (!params.id) throw new Error('testJob requires id');
+          return scheduler.testJob(params.id, {
+            handlers,
+            ...(params.to !== undefined ? { to: params.to } : {}),
+            ...(params.cc !== undefined ? { cc: params.cc } : {}),
+          });
 
         case 'runDueJobs':
           return scheduler.runDueJobs({ handlers, nodeId });
@@ -191,6 +221,46 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
 
       const reclaimResult = await fakeTool.invoke({ action: 'reclaimStaleLeases' });
       assert.strictEqual(reclaimResult.result.releasedCount, 0, 'nothing is claimed right now, so nothing to reclaim');
+
+      // pause/resume: a paused job must be untouchable by both the
+      // automatic tick and a manual force-run, and reversible (unlike cancel).
+      const paused = await fakeTool.invoke({ action: 'pauseJob', id: added.result.id });
+      assert.strictEqual(paused.result.status, 'paused');
+      const dueWhilePaused = await fakeTool.invoke({ action: 'runDueJobs' });
+      assert.strictEqual(dueWhilePaused.result.ranCount, 0, 'a paused job must never be picked up by the automatic tick');
+      await assert.rejects(
+        () => fakeTool.invoke({ action: 'runJob', id: added.result.id }),
+        /is already claimed|not.*scheduled/i,
+        'a paused job must refuse a manual force-run too'
+      );
+      const resumed = await fakeTool.invoke({ action: 'resumeJob', id: added.result.id });
+      assert.strictEqual(resumed.result.status, 'scheduled', 'resumeJob must make the job runnable again');
+
+      // testJob: must call the real handler (with dryRun/testTo/testCc
+      // merged into params, defaulting to Seth/claude@) but never claim,
+      // never touch history/status.
+      const beforeTest = await fakeTool.invoke({ action: 'getJob', id: added.result.id });
+      const tested = await fakeTool.invoke({ action: 'testJob', id: added.result.id });
+      assert.strictEqual(handlerCalls, 2, 'testJob must actually call the handler');
+      assert.deepStrictEqual(
+        tested.result,
+        { echoed: { foo: 'baz', dryRun: true, testTo: 'seth@oneworldmontessori.org', testCc: 'claude@oneworldmontessori.org' } },
+        'the handler must see dryRun: true plus the default test recipient/cc'
+      );
+      const afterTest = await fakeTool.invoke({ action: 'getJob', id: added.result.id });
+      assert.deepStrictEqual(afterTest.result.job, beforeTest.result.job, 'testJob must never mutate the job at all');
+
+      const testedWithOverride = await fakeTool.invoke({
+        action: 'testJob',
+        id: added.result.id,
+        to: 'someone-else@example.com',
+        cc: 'another@example.com',
+      });
+      assert.deepStrictEqual(
+        testedWithOverride.result,
+        { echoed: { foo: 'baz', dryRun: true, testTo: 'someone-else@example.com', testCc: 'another@example.com' } },
+        'testJob must let the test recipient/cc be overridden'
+      );
 
       const cancelled = await fakeTool.invoke({ action: 'cancelJob', id: added.result.id });
       assert.strictEqual(cancelled.result.status, 'cancelled');
