@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildMimeMessage, buildForwardMimeMessage, encodeHeaderValue } = require('../src/core/mime');
+const { buildMimeMessage, encodeHeaderValue } = require('../src/core/mime');
 
 test('a plain-text-only message has no multipart wrapper', () => {
   const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'hello there' });
@@ -97,31 +97,4 @@ test('a custom boundary is used verbatim instead of a random one, for determinis
   });
   assert.match(raw, /boundary="fixed-boundary-123"/);
   assert.match(raw, /--fixed-boundary-123--/);
-});
-
-test('buildForwardMimeMessage attaches the original as a base64 message/rfc822 .eml file (regression: 2026-08-03 — Gmail\'s send API silently dropped nested attachments when the original was embedded as literal inline text instead)', () => {
-  const originalRaw = 'From: someone@example.com\r\nSubject: Original subject\r\n\r\nOriginal body text.';
-  const raw = buildForwardMimeMessage({
-    to: 'johanna@oneworldmontessori.org',
-    cc: 'seth@oneworldmontessori.org',
-    subject: 'Fwd: Original subject',
-    introText: 'Forwarding this along.',
-    originalRawBase64Url: Buffer.from(originalRaw, 'utf8').toString('base64url'),
-    boundary: 'fixed-boundary',
-  });
-
-  assert.match(raw, /^To: johanna@oneworldmontessori\.org/);
-  assert.match(raw, /^Cc: seth@oneworldmontessori\.org/m);
-  assert.match(raw, /Content-Type: message\/rfc822; name="original-message\.eml"/);
-  assert.match(raw, /Content-Transfer-Encoding: base64/);
-  assert.match(raw, /Content-Disposition: attachment; filename="original-message\.eml"/);
-  assert.match(raw, /Forwarding this along\./);
-  // The original is opaque base64 now (that's the whole point — Gmail
-  // must never try to re-parse it), so it must NOT appear as literal text...
-  assert.doesNotMatch(raw, /From: someone@example\.com/);
-  assert.doesNotMatch(raw, /Original body text\./);
-  // ...but must survive intact once decoded back out.
-  const attachmentBase64 = raw.split('Content-Disposition: attachment; filename="original-message.eml"\r\n\r\n')[1].split('\r\n--fixed-boundary--')[0];
-  const decoded = Buffer.from(attachmentBase64.replace(/\r\n/g, ''), 'base64').toString('utf8');
-  assert.strictEqual(decoded, originalRaw, 'the original must be byte-for-byte recoverable from the base64 attachment');
 });

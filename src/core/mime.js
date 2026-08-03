@@ -80,54 +80,8 @@ function buildMimeMessage({ to, cc, subject, text, html, attachments = [], bound
   return lines.join('\r\n');
 }
 
-/**
- * Builds a genuine "forward as attachment" message: a short intro plus
- * the original message attached as a message/rfc822 .eml file (the same
- * shape Gmail's own "Forward as attachment" feature uses) — carries the
- * original's real headers, formatting, and any of ITS OWN attachments
- * intact, since it's opaque base64 data that never gets re-parsed.
- * `originalRawBase64Url` is the exact bytes Gmail's own `format: 'raw'`
- * returns for the message being forwarded.
- *
- * Regression (2026-08-03): an earlier version embedded the original as
- * literal inline text under `Content-Type: message/rfc822`. That built
- * correctly client-side (verified byte-for-byte) but Gmail's own send
- * API silently flattened it on ingestion, discarding the original's
- * nested attachments (two real PDFs, in the case that surfaced this) —
- * a real Gmail behavior, not a construction bug. Encoding the original
- * as a base64 attachment instead keeps it fully opaque, so Gmail has
- * nothing to reinterpret.
- */
-function buildForwardMimeMessage({ to, cc, subject, introText, originalRawBase64Url, boundary = defaultBoundary() }) {
-  const originalBase64 = Buffer.from(originalRawBase64Url, 'base64url').toString('base64');
-  // Standard 76-column MIME line wrap for base64 body content.
-  const wrapped = originalBase64.replace(/.{1,76}/g, (line) => `${line}\r\n`).replace(/\r\n$/, '');
-
-  const lines = [`To: ${to}`];
-  if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
-  lines.push(
-    `Subject: ${encodeHeaderValue(subject)}`,
-    'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    '',
-    `--${boundary}`,
-    'Content-Type: text/plain; charset="UTF-8"',
-    'Content-Transfer-Encoding: 8bit',
-    '',
-    introText ?? '',
-    `--${boundary}`,
-    'Content-Type: message/rfc822; name="original-message.eml"',
-    'Content-Transfer-Encoding: base64',
-    'Content-Disposition: attachment; filename="original-message.eml"',
-    '',
-    wrapped,
-    `--${boundary}--`
-  );
-  return lines.join('\r\n');
-}
-
 function defaultBoundary() {
   return `owm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-module.exports = { buildMimeMessage, buildForwardMimeMessage, encodeHeaderValue };
+module.exports = { buildMimeMessage, encodeHeaderValue };

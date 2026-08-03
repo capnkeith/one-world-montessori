@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { z } = require('zod');
 const { Tool } = require('../core/Tool');
 const { getGmailClient } = require('../core/gmailAuth');
-const { buildMimeMessage, buildForwardMimeMessage } = require('../core/mime');
+const { buildMimeMessage } = require('../core/mime');
 
 function decodeBodyData(bodyData) {
   return Buffer.from(bodyData, 'base64url').toString('utf8');
@@ -124,7 +124,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
   return new Tool({
     name: 'mail',
-    version: '1.5.0',
+    version: '1.6.0',
     description:
       'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default. Call `authorize` once per account before anything else.',
     mcpInputSchema: {
@@ -215,26 +215,56 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       if (action === 'forward') {
         if (!params.id) throw new Error('forward requires id');
         if (!params.to) throw new Error('forward requires to');
-        const res = await client.users.messages.get({ userId: 'me', id: params.id, format: 'raw' });
-        const originalRawBase64Url = res.data.raw;
-        const decoded = Buffer.from(originalRawBase64Url, 'base64url').toString('utf8');
-        const originalSubjectMatch = decoded.match(/^Subject:\s*(.+)$/im);
-        const originalSubject = originalSubjectMatch ? originalSubjectMatch[1].trim() : '(no subject)';
+        const full = await client.users.messages.get({ userId: 'me', id: params.id, format: 'full' });
+        const originalSubject = full.data.payload?.headers?.find((h) => h.name === 'Subject')?.value ?? '(no subject)';
         const subject = params.subject ?? `Fwd: ${originalSubject}`;
 
+        // Regression (2026-08-03): an earlier version relayed the whole
+        // original as a nested message/rfc822 (either literal text, which
+        // Gmail's send API silently flattened and dropped attachments
+        // from, or as a base64 .eml file, which technically preserved
+        // everything but meant the recipient had to open an attached
+        // email to get to an attachment inside IT). Seth wants this
+        // simpler: whatever real files the original had attached become
+        // direct attachments on the new message, nothing nested. Still
+        // never touches Drive — every attachment here comes from an
+        // email this account already received, exactly like `forward`'s
+        // whole reason for existing.
+        const attachmentParts = [];
+        (function walk(part) {
+          if (!part) return;
+          if (part.filename && part.body?.attachmentId) attachmentParts.push(part);
+          (part.parts ?? []).forEach(walk);
+        })(full.data.payload);
+
+        const attachments = await Promise.all(
+          attachmentParts.map(async (part) => {
+            const att = await client.users.messages.attachments.get({
+              userId: 'me',
+              messageId: params.id,
+              id: part.body.attachmentId,
+            });
+            return {
+              filename: part.filename,
+              mimeType: part.mimeType,
+              contentBase64: Buffer.from(att.data.data, 'base64url').toString('base64'),
+            };
+          })
+        );
+
         const raw = Buffer.from(
-          buildForwardMimeMessage({
-            to: params.to,
-            cc: params.cc,
-            subject,
-            introText: params.introText,
-            originalRawBase64Url,
-          }),
+          buildMimeMessage({ to: params.to, cc: params.cc, subject, text: params.introText, attachments }),
           'utf8'
         ).toString('base64url');
         const requestBody = params.threadId ? { raw, threadId: params.threadId } : { raw };
         const sendRes = await client.users.messages.send({ userId: 'me', requestBody });
-        return { sent: true, id: sendRes.data.id, threadId: sendRes.data.threadId, forwardedSubject: originalSubject };
+        return {
+          sent: true,
+          id: sendRes.data.id,
+          threadId: sendRes.data.threadId,
+          forwardedSubject: originalSubject,
+          attachmentCount: attachments.length,
+        };
       }
 
       throw new Error(`Unknown mail action: ${action}`);
@@ -289,6 +319,24 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
             parts: [{ mimeType: 'text/html', body: { data: Buffer.from('<p>Approved, <b>thanks</b>!</p>', 'utf8').toString('base64url') } }],
           },
         },
+        // forward's source: a real message with a real PDF attachment
+        // buried in a nested multipart tree, same shape as the real
+        // Anthropic receipt that surfaced the 2026-08-03 regression.
+        'msg-to-forward': {
+          id: 'msg-to-forward',
+          threadId: 'thread-forward',
+          payload: {
+            headers: [{ name: 'Subject', value: 'Your receipt from Anthropic, PBC #1234' }],
+            mimeType: 'multipart/mixed',
+            parts: [
+              {
+                mimeType: 'multipart/alternative',
+                parts: [{ mimeType: 'text/plain', body: { data: Buffer.from('Receipt body here.', 'utf8').toString('base64url') } }],
+              },
+              { mimeType: 'application/pdf', filename: 'Receipt-1234.pdf', body: { attachmentId: 'att-receipt-1', size: 12 } },
+            ],
+          },
+        },
       };
       const sendRequestBodies = [];
       const fakeClient = {
@@ -300,13 +348,14 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
               return { data: { id: 'sent-1', threadId: 'thread-1' } };
             },
             list: async () => ({ data: { messages: [{ id: 'msg-1', threadId: 'thread-1' }] } }),
-            get: async ({ id, format }) => {
-              if (format === 'raw' && id === 'msg-to-forward') {
-                const rawOriginal =
-                  'From: invoice+statements@mail.anthropic.com\r\nSubject: Your receipt from Anthropic, PBC #1234\r\n\r\nReceipt body here.';
-                return { data: { raw: Buffer.from(rawOriginal, 'utf8').toString('base64url') } };
-              }
-              return { data: fakeMessages[id] };
+            get: async ({ id }) => ({ data: fakeMessages[id] }),
+            attachments: {
+              get: async ({ id }) => {
+                if (id === 'att-receipt-1') {
+                  return { data: { data: Buffer.from('fake pdf bytes').toString('base64url'), size: 12 } };
+                }
+                throw new Error(`unexpected attachment id ${id}`);
+              },
             },
           },
           threads: {
@@ -426,11 +475,13 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       });
       assert.strictEqual(jobDefinedSend.result.sent, true, 'job-defined attachments are allowed through');
 
-      // forward: a genuine "forward as attachment" (a base64 message/rfc822
-      // .eml file, not literal inline text — see mime.js's header for why:
-      // Gmail's own send API silently drops nested attachments from a
-      // literal-text message/rfc822 part) - defaults the subject from the
-      // original, and the original survives byte-for-byte once decoded.
+      // forward: extracts the original's real attachments and attaches
+      // them directly to the new message (regression: 2026-08-03 — an
+      // earlier version wrapped the whole original as a nested .eml
+      // attachment, which technically preserved everything but meant a
+      // recipient had to open an attached email to get to an attachment
+      // inside IT; Seth wanted the PDF attached directly, not nested).
+      // Defaults the subject from the original.
       const forwarded = await fakeTool.invoke({
         action: 'forward',
         id: 'msg-to-forward',
@@ -439,14 +490,16 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       });
       assert.strictEqual(forwarded.result.sent, true);
       assert.strictEqual(forwarded.result.forwardedSubject, 'Your receipt from Anthropic, PBC #1234');
+      assert.strictEqual(forwarded.result.attachmentCount, 1, 'the one real PDF part on the original must become one direct attachment');
       const forwardedRaw = Buffer.from(sentRawMessages[sentRawMessages.length - 1], 'base64url').toString('utf8');
       assert.match(forwardedRaw, /Subject: Fwd: Your receipt from Anthropic, PBC #1234/);
-      assert.match(forwardedRaw, /Content-Type: message\/rfc822; name="original-message\.eml"/);
-      assert.match(forwardedRaw, /Content-Transfer-Encoding: base64/);
-      assert.doesNotMatch(forwardedRaw, /Receipt body here\./, 'the original must be opaque base64, never literal text, in what actually gets sent');
-      const eml = forwardedRaw.split('Content-Disposition: attachment; filename="original-message.eml"\r\n\r\n')[1].split(/\r\n--/)[0];
-      const decodedOriginal = Buffer.from(eml.replace(/\r\n/g, ''), 'base64').toString('utf8');
-      assert.match(decodedOriginal, /Receipt body here\./, 'the original message content must survive byte-for-byte once decoded back out');
+      assert.match(forwardedRaw, /Content-Type: application\/pdf; name="Receipt-1234\.pdf"/, 'the PDF must be a direct attachment, not nested inside a forwarded email');
+      assert.doesNotMatch(forwardedRaw, /Content-Type: message\/rfc822/, 'no nested-email wrapper — the direct attachment is the whole point');
+      assert.match(forwardedRaw, /Forwarding along\./);
+      assert.ok(
+        forwardedRaw.includes(Buffer.from('fake pdf bytes').toString('base64')),
+        'the actual attachment bytes must be the real fetched attachment content'
+      );
       assert.match(forwardedRaw, /Forwarding along\./);
 
       // Multi-account: a named account gets its own client, cached
