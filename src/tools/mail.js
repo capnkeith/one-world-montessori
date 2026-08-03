@@ -124,7 +124,7 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
   return new Tool({
     name: 'mail',
-    version: '1.6.0',
+    version: '1.6.1',
     description:
       'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default. Call `authorize` once per account before anything else.',
     mcpInputSchema: {
@@ -217,7 +217,11 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         if (!params.to) throw new Error('forward requires to');
         const full = await client.users.messages.get({ userId: 'me', id: params.id, format: 'full' });
         const originalSubject = full.data.payload?.headers?.find((h) => h.name === 'Subject')?.value ?? '(no subject)';
-        const subject = params.subject ?? `Fwd: ${originalSubject}`;
+        // Regression (2026-08-03): forwarding a message that was itself
+        // already forwarded (e.g. Seth -> claude@ -> Johanna) doubled the
+        // prefix into "Fwd: Fwd: ...". Only add one if the original
+        // doesn't already carry one.
+        const subject = params.subject ?? (/^fwd:\s*/i.test(originalSubject) ? originalSubject : `Fwd: ${originalSubject}`);
 
         // Regression (2026-08-03): an earlier version relayed the whole
         // original as a nested message/rfc822 (either literal text, which
@@ -335,6 +339,18 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
               },
               { mimeType: 'application/pdf', filename: 'Receipt-1234.pdf', body: { attachmentId: 'att-receipt-1', size: 12 } },
             ],
+          },
+        },
+        // Regression fixture: a message that's already been forwarded
+        // once (subject already carries "Fwd:") — forwarding it again
+        // must not double the prefix into "Fwd: Fwd: ...".
+        'msg-already-forwarded': {
+          id: 'msg-already-forwarded',
+          threadId: 'thread-already-forwarded',
+          payload: {
+            headers: [{ name: 'Subject', value: 'Fwd: Your receipt from Anthropic, PBC #1234' }],
+            mimeType: 'multipart/mixed',
+            parts: [{ mimeType: 'text/plain', body: { data: Buffer.from('Already forwarded once.', 'utf8').toString('base64url') } }],
           },
         },
       };
@@ -501,6 +517,18 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         'the actual attachment bytes must be the real fetched attachment content'
       );
       assert.match(forwardedRaw, /Forwarding along\./);
+
+      // Regression: forwarding a message that's already been forwarded
+      // once must not double the "Fwd:" prefix (real bug: a Seth ->
+      // claude@ -> Johanna double-hop produced "Fwd: Fwd: ...").
+      await fakeTool.invoke({
+        action: 'forward',
+        id: 'msg-already-forwarded',
+        to: 'johanna@oneworldmontessori.org',
+      });
+      const reforwardedRaw = Buffer.from(sentRawMessages[sentRawMessages.length - 1], 'base64url').toString('utf8');
+      assert.match(reforwardedRaw, /^Subject: Fwd: Your receipt from Anthropic, PBC #1234$/m);
+      assert.doesNotMatch(reforwardedRaw, /Fwd: Fwd:/, 'must never double the Fwd: prefix on an already-forwarded message');
 
       // Multi-account: a named account gets its own client, cached
       // separately, without disturbing the default account's client.
