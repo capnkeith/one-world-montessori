@@ -25,10 +25,28 @@ const path = require('path');
 const { createSecretStore } = require('../src/core/SecretStore');
 const { SECRETS_DIR } = require('../src/core/paths');
 const { autoDiscoverChannel } = require('../src/core/autoDiscoverChannel');
+const { getCloudPlatformAuth } = require('../src/core/googleCloudAuth');
 
 async function main() {
   console.log('[channel] checking shared presence access...');
   const secretStore = createSecretStore(SECRETS_DIR);
+
+  // autoDiscoverChannel only ever reads (see its own header) - it never
+  // requests consent, on purpose, so a headless boot can't pop a browser.
+  // This script's entire premise is the opposite: a real human is watching
+  // right now and a consent popup is expected. Without this call, a brand
+  // new machine has no google_secrets_refresh_token and no supported way
+  // to ever get one, so every later read silently resolves to "nothing
+  // shared" forever (found live 2026-08-03 diagnosing a real user stuck at
+  // onlinePeerCount: 0 with no error ever surfacing).
+  if (!secretStore.has('google_secrets_refresh_token')) {
+    try {
+      await getCloudPlatformAuth({ secretStore, allowConsent: true });
+    } catch (err) {
+      console.log(`[channel] cloud-platform authorization skipped (${err.message})`);
+    }
+  }
+
   await autoDiscoverChannel({ secretStore });
   console.log('[channel] done.');
 }
