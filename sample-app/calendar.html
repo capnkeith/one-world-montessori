@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OWM Calendar</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: system-ui, sans-serif; color: #1a1a1a; background: #f5f6f8; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; background: #fff; border-bottom: 1px solid #ddd; }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  header a { color: #2a5cdb; text-decoration: none; font-size: 0.9em; }
+  header a:hover { text-decoration: underline; }
+  main { max-width: 1000px; margin: 0 auto; padding: 1rem; }
+  .cal-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.75rem; }
+  .cal-toolbar h2 { margin: 0; font-size: 1.05rem; }
+  .cal-nav button { cursor: pointer; border: 1px solid #ccc; border-radius: 4px; background: #fff; padding: 0.3rem 0.65rem; font-size: 0.9em; margin-left: 0.4rem; }
+  .cal-nav button:hover { background: #f0f4ff; }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: #e0e0e0; border: 1px solid #e0e0e0; border-radius: 6px; overflow: hidden; }
+  .cal-dow { background: #fafafa; text-align: center; padding: 0.4rem; font-size: 0.8em; font-weight: 600; color: #666; }
+  .cal-day { background: #fff; min-height: 96px; padding: 0.3rem; font-size: 0.8em; display: flex; flex-direction: column; gap: 0.2rem; }
+  .cal-day.other-month { background: #fafafa; color: #bbb; }
+  .cal-day.today .cal-day-num { background: #2a5cdb; color: #fff; border-radius: 50%; width: 1.4em; height: 1.4em; display: inline-flex; align-items: center; justify-content: center; }
+  .cal-day-num { font-weight: 600; }
+  .cal-chip { cursor: pointer; border-radius: 4px; padding: 0.1rem 0.35rem; font-size: 0.8em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cal-chip:hover { filter: brightness(0.95); }
+  .cal-chip-success { background: #e4f7e9; color: #206b34; }
+  .cal-chip-failed { background: #fde2e2; color: #a02020; }
+  .cal-chip-upcoming { background: #e6f0ff; color: #1a4fb0; border: 1px dashed #a9c3f5; }
+  .muted { color: #888; font-style: italic; }
+  .cal-legend { display: flex; gap: 1rem; margin-top: 0.75rem; font-size: 0.8em; color: #555; align-items: center; }
+  .cal-legend .cal-chip { cursor: default; padding: 0.1rem 0.5rem; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>OWM Calendar</h1>
+    <div style="display:flex; align-items:center; gap:1rem;">
+      <a href="/status.html">📊 Status</a>
+      <a href="/">&larr; Back to Drive</a>
+    </div>
+  </header>
+  <main>
+    <div class="cal-toolbar">
+      <h2 id="cal-title"></h2>
+      <div class="cal-nav">
+        <button id="cal-prev">◀ Prev</button>
+        <button id="cal-today">Today</button>
+        <button id="cal-next">Next ▶</button>
+      </div>
+    </div>
+    <div id="cal-grid"><span class="muted">Loading...</span></div>
+    <div class="cal-legend">
+      <span class="cal-chip cal-chip-success">completed run</span>
+      <span class="cal-chip cal-chip-failed">failed run</span>
+      <span class="cal-chip cal-chip-upcoming">upcoming (scheduled)</span>
+    </div>
+  </main>
+
+  <script>
+    const BASE_URL = '';
+    const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const MONTH_NAMES = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+
+    async function invoke(toolName, params) {
+      const res = await fetch(`${BASE_URL}/tools/${toolName}/invoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      const body = await res.json();
+      if (body.error) throw new Error(body.error);
+      return body.result;
+    }
+
+    function el(tag, props = {}, children = []) {
+      const node = document.createElement(tag);
+      Object.assign(node, props);
+      for (const child of children) node.append(child);
+      return node;
+    }
+
+    function dateKey(d) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    // Real Date.now()/`new Date()` are fine here - this is plain browser
+    // JS in a served page, not an orchestration script with that restriction.
+    const today = new Date();
+    let viewYear = today.getFullYear();
+    let viewMonth = today.getMonth(); // 0-indexed
+
+    // Builds { 'YYYY-MM-DD': [event, ...] } from every job's real history
+    // (each entry is something that actually already happened) plus each
+    // still-scheduled job's single next run (the only future occurrence
+    // that's actually meaningful to show - a recurring schedule has no
+    // fixed end, so this deliberately doesn't try to project further out).
+    function buildEventsByDate(jobs) {
+      const byDate = {};
+      const add = (date, event) => {
+        const key = dateKey(date);
+        (byDate[key] ??= []).push(event);
+      };
+      for (const job of jobs) {
+        for (const h of job.history ?? []) {
+          if (!h.ranAt) continue;
+          add(new Date(h.ranAt), {
+            jobId: job.id,
+            label: job.label,
+            kind: h.status === 'success' ? 'success' : 'failed',
+            time: new Date(h.ranAt),
+          });
+        }
+        if (job.nextRunAt && job.status === 'scheduled') {
+          add(new Date(job.nextRunAt), {
+            jobId: job.id,
+            label: job.label,
+            kind: 'upcoming',
+            time: new Date(job.nextRunAt),
+          });
+        }
+      }
+      for (const key of Object.keys(byDate)) {
+        byDate[key].sort((a, b) => a.time - b.time);
+      }
+      return byDate;
+    }
+
+    function chipFor(event) {
+      const chip = el('div', {
+        className: `cal-chip cal-chip-${event.kind}`,
+        textContent: event.label,
+        title: `${event.label} — ${event.kind} — ${event.time.toLocaleString()}`,
+      });
+      chip.addEventListener('click', () => {
+        location.href = `/status.html?job=${encodeURIComponent(event.jobId)}`;
+      });
+      return chip;
+    }
+
+    async function renderCalendar() {
+      document.getElementById('cal-title').textContent = `${MONTH_NAMES[viewMonth]} ${viewYear}`;
+      const gridEl = document.getElementById('cal-grid');
+
+      let eventsByDate = {};
+      try {
+        const { jobs } = await invoke('scheduler', { action: 'listJobs' });
+        eventsByDate = buildEventsByDate(jobs);
+      } catch (err) {
+        gridEl.replaceChildren(el('span', { className: 'muted', textContent: `Could not load jobs: ${err.message}` }));
+        return;
+      }
+
+      const firstOfMonth = new Date(viewYear, viewMonth, 1);
+      const startOffset = firstOfMonth.getDay(); // 0=Sun
+      const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+      const gridStart = new Date(viewYear, viewMonth, 1 - startOffset);
+
+      const grid = el(
+        'div',
+        { className: 'cal-grid' },
+        DOW.map((d) => el('div', { className: 'cal-dow', textContent: d }))
+      );
+
+      const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+      for (let i = 0; i < totalCells; i++) {
+        const cellDate = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
+        const isOtherMonth = cellDate.getMonth() !== viewMonth;
+        const isToday = dateKey(cellDate) === dateKey(today);
+        const events = eventsByDate[dateKey(cellDate)] ?? [];
+
+        const dayCell = el('div', {
+          className: `cal-day${isOtherMonth ? ' other-month' : ''}${isToday ? ' today' : ''}`,
+        });
+        dayCell.append(el('span', { className: 'cal-day-num', textContent: String(cellDate.getDate()) }));
+        for (const event of events) dayCell.append(chipFor(event));
+        grid.append(dayCell);
+      }
+
+      gridEl.replaceChildren(grid);
+    }
+
+    document.getElementById('cal-prev').addEventListener('click', () => {
+      viewMonth -= 1;
+      if (viewMonth < 0) { viewMonth = 11; viewYear -= 1; }
+      renderCalendar();
+    });
+    document.getElementById('cal-next').addEventListener('click', () => {
+      viewMonth += 1;
+      if (viewMonth > 11) { viewMonth = 0; viewYear += 1; }
+      renderCalendar();
+    });
+    document.getElementById('cal-today').addEventListener('click', () => {
+      viewYear = today.getFullYear();
+      viewMonth = today.getMonth();
+      renderCalendar();
+    });
+
+    renderCalendar();
+    setInterval(renderCalendar, 30_000);
+  </script>
+</body>
+</html>

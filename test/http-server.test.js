@@ -79,6 +79,30 @@ test('GET /status.html serves the real-time compute-node/job/queue monitoring pa
     assert.match(res.headers.get('content-type'), /text\/html/);
     const body = await res.text();
     assert.match(body, /<title>OWM Status<\/title>/);
+    // The inspect/edit panel must actually be wired to the scheduler
+    // tool's real mutating actions, not just list jobs read-only.
+    for (const action of ['getJob', 'updateJob', 'pauseJob', 'resumeJob', 'cancelJob', 'runJob', 'testJob']) {
+      assert.ok(body.includes(action), `status page must wire up the scheduler '${action}' action`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('GET /calendar.html serves the monthly job-activity calendar', async () => {
+  const server = startServer({ port: 0, stateRoot: tempStateRoot() });
+  await listen(server);
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+
+  try {
+    const res = await fetch(`${base}/calendar.html`);
+    assert.strictEqual(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    const body = await res.text();
+    assert.match(body, /<title>OWM Calendar<\/title>/);
+    // Read-only: must build its view from listJobs, never claim anything.
+    assert.ok(body.includes('listJobs'), 'calendar page must read real job data');
   } finally {
     server.close();
   }

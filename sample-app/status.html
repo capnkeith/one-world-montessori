@@ -18,6 +18,9 @@
   th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
   th { color: #666; font-weight: 600; font-size: 0.85em; }
   tr:last-child td { border-bottom: none; }
+  tbody tr.job-row { cursor: pointer; }
+  tbody tr.job-row:hover { background: #f5f8ff; }
+  tbody tr.job-row.selected { background: #eaf1ff; }
   .muted { color: #888; font-style: italic; }
   .pill { display: inline-block; border-radius: 999px; padding: 0.1rem 0.55rem; font-size: 0.8em; font-weight: 600; }
   .pill-scheduled { background: #e6f0ff; color: #1a4fb0; }
@@ -29,10 +32,37 @@
   .pill-online { background: #e4f7e9; color: #206b34; }
   .pill-answered { background: #e4f7e9; color: #206b34; }
   .pill-pending { background: #fff3d6; color: #92660a; }
+  .pill-failed { background: #fde2e2; color: #a02020; }
+  .pill-success { background: #e4f7e9; color: #206b34; }
   .node-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0; }
   .node-row img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
   .node-row .avatar-fallback { width: 28px; height: 28px; border-radius: 50%; background: #2a5cdb; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 0.75em; font-weight: 600; }
   code.small { font-size: 0.8em; color: #888; }
+  .hidden { display: none !important; }
+  #job-detail { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid #e0e0e0; }
+  .jd-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.3rem; }
+  .jd-close { cursor: pointer; background: none; border: 1px solid #ccc; border-radius: 4px; padding: 0.1rem 0.5rem; font-size: 0.85em; }
+  .jd-close:hover { background: #f0f4ff; }
+  .jd-meta { font-size: 0.85em; margin-bottom: 0.75rem; }
+  #job-detail label { display: block; font-size: 0.8em; color: #555; font-weight: 600; margin: 0.6rem 0 0.2rem; }
+  #job-detail input[type="text"], #job-detail textarea, #job-detail select {
+    width: 100%; font-family: inherit; font-size: 0.85em; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px;
+  }
+  #job-detail textarea { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.8em; resize: vertical; }
+  .jd-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; }
+  .jd-actions button { cursor: pointer; border: 1px solid #ccc; border-radius: 4px; padding: 0.35rem 0.7rem; font-size: 0.85em; background: #fff; }
+  .jd-actions button:hover:not(:disabled) { background: #f0f4ff; }
+  .jd-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .jd-actions button.primary { background: #2a5cdb; color: #fff; border-color: #2a5cdb; }
+  .jd-actions button.primary:hover:not(:disabled) { background: #1e46ad; }
+  .jd-actions button.danger { background: #fde2e2; color: #a02020; border-color: #f3b8b8; }
+  .jd-actions button.danger:hover:not(:disabled) { background: #fbcaca; }
+  .jd-message { margin-top: 0.6rem; font-size: 0.85em; white-space: pre-wrap; }
+  .jd-message.jd-success { color: #206b34; }
+  .jd-message.jd-error { color: #a02020; }
+  .jd-history { margin-top: 0.9rem; }
+  .jd-history-entry { padding: 0.4rem 0; border-top: 1px solid #eee; font-size: 0.85em; }
+  .jd-history-detail { background: #f7f7f7; padding: 0.4rem; border-radius: 4px; font-size: 0.85em; overflow-x: auto; white-space: pre-wrap; margin: 0.3rem 0 0; }
 </style>
 </head>
 <body>
@@ -40,6 +70,7 @@
     <h1>OWM Status</h1>
     <div style="display:flex; align-items:center; gap:1rem;">
       <span id="refreshed"></span>
+      <a href="/calendar.html">📅 Calendar</a>
       <a href="/">&larr; Back to Drive</a>
     </div>
   </header>
@@ -50,8 +81,9 @@
     </section>
 
     <section>
-      <h2>Scheduled jobs</h2>
+      <h2>Scheduled jobs <span class="muted" style="font-weight:normal;">(click a row to inspect/edit)</span></h2>
       <div id="jobs"><span class="muted">Loading...</span></div>
+      <div id="job-detail" class="hidden"></div>
     </section>
 
     <section>
@@ -121,11 +153,16 @@
       }
     }
 
-    // --- scheduled jobs: real scheduler state, read-only (listJobs never
-    // claims anything, unlike runJob/claimJob).
+    // --- scheduled jobs: the list itself stays read-only (listJobs never
+    // claims anything), but clicking a row opens a real inspect/edit panel
+    // wired to the scheduler tool's own getJob/updateJob/pauseJob/
+    // resumeJob/cancelJob/runJob/testJob actions - every capability here
+    // already existed server-side, this is purely the UI for it.
     function jobPillClass(status) {
       return `pill pill-${status || 'scheduled'}`;
     }
+
+    let selectedJobId = null;
 
     async function renderJobs() {
       const container = document.getElementById('jobs');
@@ -150,22 +187,190 @@
         );
         const tbody = el('tbody');
         for (const job of jobs) {
-          tbody.append(
-            el('tr', {}, [
-              el('td', { textContent: job.label }),
-              el('td', {}, [el('code', { className: 'small', textContent: job.type })]),
-              el('td', {}, [el('span', { className: jobPillClass(job.status), textContent: job.status })]),
-              el('td', { textContent: job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : '—' }),
-              el('td', { textContent: job.lastRunAt ? timeAgo(job.lastRunAt) : 'never' }),
-              el('td', { textContent: String(job.history?.length ?? 0) }),
-            ])
-          );
+          const row = el('tr', { className: 'job-row' + (job.id === selectedJobId ? ' selected' : '') }, [
+            el('td', { textContent: job.label }),
+            el('td', {}, [el('code', { className: 'small', textContent: job.type })]),
+            el('td', {}, [el('span', { className: jobPillClass(job.status), textContent: job.status })]),
+            el('td', { textContent: job.nextRunAt ? new Date(job.nextRunAt).toLocaleString() : '—' }),
+            el('td', { textContent: job.lastRunAt ? timeAgo(job.lastRunAt) : 'never' }),
+            el('td', { textContent: String(job.history?.length ?? 0) }),
+          ]);
+          row.addEventListener('click', () => openJobDetail(job.id));
+          tbody.append(row);
         }
         table.append(tbody);
         container.replaceChildren(table);
       } catch (err) {
         container.replaceChildren(el('span', { className: 'muted', textContent: `Could not load jobs: ${err.message}` }));
       }
+    }
+
+    function closeJobDetail() {
+      selectedJobId = null;
+      const panel = document.getElementById('job-detail');
+      panel.classList.add('hidden');
+      panel.replaceChildren();
+      renderJobs();
+    }
+
+    async function openJobDetail(id) {
+      selectedJobId = id;
+      await renderJobs();
+      await reloadJobDetail();
+    }
+
+    // Deliberately only reloads the detail panel on explicit action (open,
+    // or after Save/Pause/Resume/etc. complete) - never on the 5s
+    // background poll, which would otherwise blow away an in-progress edit
+    // out from under whoever is typing into the textareas.
+    async function reloadJobDetail() {
+      if (!selectedJobId) return;
+      const panel = document.getElementById('job-detail');
+      panel.classList.remove('hidden');
+      try {
+        const { job } = await invoke('scheduler', { action: 'getJob', id: selectedJobId });
+        renderJobDetail(job);
+      } catch (err) {
+        panel.replaceChildren(el('div', { className: 'jd-message jd-error', textContent: `Could not load job: ${err.message}` }));
+      }
+    }
+
+    function renderJobDetail(job) {
+      const panel = document.getElementById('job-detail');
+
+      const labelInput = el('input', { type: 'text', value: job.label });
+      const retrySelect = el(
+        'select',
+        {},
+        ['idempotent', 'at-most-once'].map((opt) => el('option', { value: opt, textContent: opt, selected: job.retryPolicy === opt }))
+      );
+      const scheduleTextarea = el('textarea', { value: JSON.stringify(job.schedule, null, 2), rows: 4 });
+      const paramsTextarea = el('textarea', { value: JSON.stringify(job.params, null, 2), rows: 10 });
+      const messageEl = el('div', { className: 'jd-message' });
+
+      // Wraps an action: shows a working/result message, then reloads both
+      // the detail panel (fresh state) and the list (status/next-run may
+      // have changed) - never leaves stale data showing after a real change.
+      async function withMessage(fn, { resultText } = {}) {
+        messageEl.textContent = 'Working...';
+        messageEl.className = 'jd-message';
+        try {
+          const result = await fn();
+          messageEl.textContent = resultText ? resultText(result) : 'Done.';
+          messageEl.className = 'jd-message jd-success';
+        } catch (err) {
+          messageEl.textContent = `Failed: ${err.message}`;
+          messageEl.className = 'jd-message jd-error';
+        }
+        await reloadJobDetail();
+        await renderJobs();
+      }
+
+      const saveBtn = el('button', {
+        className: 'primary',
+        textContent: 'Save changes',
+        onclick: () =>
+          withMessage(() => {
+            let schedule, params;
+            try {
+              schedule = JSON.parse(scheduleTextarea.value);
+            } catch (err) {
+              throw new Error(`Schedule is not valid JSON: ${err.message}`);
+            }
+            try {
+              params = JSON.parse(paramsTextarea.value);
+            } catch (err) {
+              throw new Error(`Params is not valid JSON: ${err.message}`);
+            }
+            return invoke('scheduler', {
+              action: 'updateJob',
+              id: job.id,
+              label: labelInput.value,
+              schedule,
+              params,
+              retryPolicy: retrySelect.value,
+            });
+          }),
+      });
+
+      const pauseBtn = el('button', {
+        textContent: 'Pause',
+        disabled: job.status !== 'scheduled',
+        onclick: () => withMessage(() => invoke('scheduler', { action: 'pauseJob', id: job.id })),
+      });
+      const resumeBtn = el('button', {
+        textContent: 'Resume',
+        disabled: job.status !== 'paused',
+        onclick: () => withMessage(() => invoke('scheduler', { action: 'resumeJob', id: job.id })),
+      });
+      const testBtn = el('button', {
+        textContent: 'Test (safe preview)',
+        title: 'Runs the job for real, but redirected to a safe test recipient instead of the real one - never affects anything real.',
+        onclick: () =>
+          withMessage(() => invoke('scheduler', { action: 'testJob', id: job.id }), {
+            resultText: (result) => `Test result:\n${JSON.stringify(result, null, 2)}`,
+          }),
+      });
+      const runBtn = el('button', {
+        textContent: 'Run now (real)',
+        disabled: job.status !== 'scheduled',
+        onclick: () => {
+          if (!confirm(`Run "${job.label}" for real, right now? This performs its actual action (e.g. a real email send) immediately, for real.`)) return;
+          return withMessage(() => invoke('scheduler', { action: 'runJob', id: job.id }), {
+            resultText: (result) => `Ran. Result:\n${JSON.stringify(result, null, 2)}`,
+          });
+        },
+      });
+      const cancelBtn = el('button', {
+        className: 'danger',
+        textContent: 'Cancel job',
+        disabled: job.status === 'cancelled' || job.status === 'completed',
+        onclick: () => {
+          if (!confirm(`Cancel "${job.label}"? This cannot be undone (no un-cancel) - use Pause instead if you just want to hold it temporarily.`)) return;
+          return withMessage(() => invoke('scheduler', { action: 'cancelJob', id: job.id }));
+        },
+      });
+
+      const historyEntries = [...(job.history ?? [])].reverse();
+      const historyEl = el('div', { className: 'jd-history' }, [
+        el('strong', { textContent: `History (${historyEntries.length})` }),
+        ...(historyEntries.length
+          ? historyEntries.map((h) =>
+              el('div', { className: 'jd-history-entry' }, [
+                el('span', { className: `pill pill-${h.status === 'success' ? 'success' : 'failed'}`, textContent: h.status }),
+                document.createTextNode(` ${h.ranAt ? new Date(h.ranAt).toLocaleString() : ''}`),
+                el('pre', { className: 'jd-history-detail', textContent: JSON.stringify(h.detail ?? h.error ?? null, null, 2) }),
+              ])
+            )
+          : [el('div', { className: 'muted', textContent: 'No runs yet.' })]),
+      ]);
+
+      panel.replaceChildren(
+        el('div', { className: 'jd-header' }, [
+          el('strong', { textContent: `Editing: ${job.label}` }),
+          el('button', { className: 'jd-close', textContent: '✕ Close', onclick: closeJobDetail }),
+        ]),
+        el('div', { className: 'jd-meta muted' }, [
+          document.createTextNode(`id ${job.id} · type `),
+          el('code', { className: 'small', textContent: job.type }),
+          document.createTextNode(' · status '),
+          el('span', { className: jobPillClass(job.status), textContent: job.status }),
+          document.createTextNode(
+            ` · attachments: ${job.attachments?.length ?? 0} (fixed at creation, not editable here)`
+          ),
+        ]),
+        el('label', { textContent: 'Label' }),
+        labelInput,
+        el('label', { textContent: 'Retry policy' }),
+        retrySelect,
+        el('label', { textContent: 'Schedule (JSON)' }),
+        scheduleTextarea,
+        el('label', { textContent: 'Params (JSON)' }),
+        paramsTextarea,
+        el('div', { className: 'jd-actions' }, [saveBtn, pauseBtn, resumeBtn, testBtn, runBtn, cancelBtn]),
+        messageEl,
+        historyEl
+      );
     }
 
     // --- ask claude queue: read-only listPrompts (never claims, unlike
@@ -219,7 +424,13 @@
       document.getElementById('refreshed').textContent = `updated ${new Date().toLocaleTimeString()}`;
     }
 
-    refreshAll();
+    refreshAll().then(() => {
+      // Deep link from the calendar page (?job=<id>) - opens straight into
+      // that job's inspect/edit panel instead of leaving it to be found
+      // by scrolling the table.
+      const deepLinkJobId = new URLSearchParams(location.search).get('job');
+      if (deepLinkJobId) openJobDetail(deepLinkJobId);
+    });
     setInterval(refreshAll, 5_000);
   </script>
 </body>

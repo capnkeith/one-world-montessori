@@ -12,6 +12,7 @@ const { autoDiscoverChannel } = require('../core/autoDiscoverChannel');
 
 const SAMPLE_APP_PATH = path.join(__dirname, '..', '..', 'sample-app', 'index.html');
 const STATUS_PAGE_PATH = path.join(__dirname, '..', '..', 'sample-app', 'status.html');
+const CALENDAR_PAGE_PATH = path.join(__dirname, '..', '..', 'sample-app', 'calendar.html');
 const CHECK_FOR_UPDATE_PATH = path.join(__dirname, '..', '..', 'bootstrap', 'check-for-update.js');
 
 /**
@@ -226,6 +227,16 @@ function startServer({
       if (req.method === 'GET' && url.pathname === '/status.html') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(fs.readFileSync(STATUS_PAGE_PATH));
+        return;
+      }
+
+      // Monthly calendar of scheduled-job activity - each job's real run
+      // history plus its single next occurrence (a recurring schedule has
+      // no fixed end, so this deliberately doesn't project further than
+      // one upcoming run). Read-only (listJobs only), same as status.html.
+      if (req.method === 'GET' && url.pathname === '/calendar.html') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(fs.readFileSync(CALENDAR_PAGE_PATH));
         return;
       }
 

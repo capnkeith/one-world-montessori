@@ -211,55 +211,77 @@ compute node happens to be checking.
 
 3. If it's non-empty, each entry is `{id, query, user, submittedAt}`.
    `user` is whichever real account submitted it (`{email, displayName}`,
-   or `null` if it couldn't be resolved). For each one: read `query`,
-   figure out the actual answer yourself (you likely already have
-   `drive`/`channel`/etc. tools available — use them normally, this
-   queue has no special restriction on which tools you use to research
-   the answer, unlike the reply-resolution queue's DLP guardrails), then
-   call the `promptQueue` tool's `recordAnswer` action with `{id, answer:
-   {text, entries?}}`:
+   or `null` if it couldn't be resolved). For each one, read `query` and
+   follow the Drive-centered recipe below, then call the `promptQueue`
+   tool's `recordAnswer` action with `{id, answer: {text, entries?}}`:
 
-   - `text` — always required, plain prose. Keep it reasonably concise;
-     this shows up directly in the sample app's preview pane.
-   - `entries` — optional, only for a query whose natural answer is one
-     or more real Drive items (a folder listing, or just a single file).
-     Each entry is the same shape `drive`'s `browse`/`search` already
-     return (`id`, `name`, `mimeType`, `isFolder`, `webViewLink`) — the
-     app renders these as real, clickable Drive rows, not just words
-     describing them. Omit `entries` entirely for a plain non-Drive
-     question.
+   - `text` — always required, short and plain. Keep it brief; this
+     shows up directly in the sample app's preview pane.
+   - `entries` — the real Drive items that answer the query (omit
+     entirely, or leave empty, when nothing matched). Each entry is the
+     same shape `drive`'s `browse`/`search` already return (`id`,
+     `name`, `mimeType`, `isFolder`, `webViewLink`) — the app renders
+     these as real, clickable Drive rows, not just words describing
+     them.
 
-### Drive-centered queries: search the shared OWM tree, respect the asker's own view
+### Every query is a Drive search — no exceptions
 
-If `query` sounds like it's about **OWM Drive** (the shared org tree —
-what `drive`'s `browse` with no `folderId` shows as the `OWM` entry, not
-personal "My Drive"), actually search it before answering:
+This bar is a Drive-search assistant, not a general chat window. Every
+single query — no matter how it's phrased, even if it doesn't obviously
+mention files or Drive — gets treated as a request to find something in
+**OWM Drive** (the shared org tree: what `drive`'s `browse` with no
+`folderId` shows as the `OWM` entry, not personal "My Drive"). There is
+no fallback to answering from general knowledge, prose explanation, or
+anything not actually found in Drive. There are exactly three possible
+outcomes:
 
-1. Use `drive`'s `search`/`browse`/`getContent` for real — don't guess
-   or answer from memory of what you think is in there.
-2. **Respect the asker's own Drive view, not just yours.** Call `drive`'s
+1. **Something** — one real file answers it. Return it as a single
+   `entries` item, with a one-line `text` (e.g. "Found this:").
+2. **Things** — several real files/folders answer it (e.g. a folder
+   listing, or multiple matches). Return them all as `entries`.
+3. **Nothing** — no real match exists in OWM Drive. Return `entries`
+   omitted/empty, with `text` saying so plainly (e.g. "Nothing in OWM
+   Drive matched this.") — never invent an answer, never fall back to
+   general knowledge, and never create a new file to fill the gap.
+
+To reach one of these outcomes, actually use `drive`'s real search
+features rather than guessing:
+
+1. Start with `drive`'s `search` action (`{query}`) — a name/content
+   match across the whole tree — for whatever keywords the question
+   implies. If the query is really asking "where is X" or "what files
+   do we have about Y," a good `search` result set alone may already be
+   the answer (return it as `entries` — that's outcome 2, "things").
+2. If the query is asking for a specific piece of *information* (e.g.
+   "what is our refund policy," not just "find the refund policy
+   file"), don't stop at a filename match — use `drive`'s `getContent`
+   (or `getRichContent` for a docx/PDF that needs full-fidelity
+   rendering) on the most likely candidate(s) from `search` to actually
+   read what's inside before deciding whether it answers the question.
+   A matching filename that doesn't actually contain the answer isn't a
+   real match.
+3. Use `drive`'s `browse` (with a specific `folderId`) when the query is
+   about a location or listing (e.g. "what's in the enrollment
+   folder") rather than a name/content search.
+4. Try more than one phrasing/keyword angle if the first search comes up
+   empty before concluding it's genuinely "nothing" — a query can be
+   worded very differently from the actual filenames in Drive.
+5. **Respect the asker's own Drive view, not just yours.** Call `drive`'s
    `whoami` action to see which account *you're* running as, and compare
    against the prompt's `user.email`. If they match, proceed normally —
    whatever you see is what they'd see. If they *don't* match, you can't
    be sure your view (hidden folders via `hideFolder` are per-account,
    and sharing can differ) matches what `user` is actually allowed to
-   see — say so plainly in `text` (e.g. "I'm running as a different
-   account than you, so I can't guarantee this reflects exactly what you
-   have access to") rather than silently substituting your own
-   permissions for theirs. Still show what you found; just be honest
-   about the caveat.
-3. If a real existing file or folder listing answers the question,
-   return it as `entries` (one entry for a single file, several for a
-   folder listing) with a short `text` summary.
-4. **If nothing existing answers it**, synthesize the answer yourself
-   and write it down as a real file via `drive`'s `createFile` action
-   (`{name, content, parentId}` — defaults to a native Google Doc
-   converted from your plain-text content) rather than only replying in
-   chat-like text that leaves no trace in Drive. Put it somewhere
-   sensible under the shared OWM folder (pass its id as `parentId`), then
-   return that one new file as the sole `entries` item, with `text`
-   noting it's a newly created document answering their question — never
-   silently create files without saying so.
+   see — say so plainly in `text` alongside whatever you did find (e.g.
+   "I'm running as a different account than you, so I can't guarantee
+   this is everything you have access to") rather than silently
+   substituting your own permissions for theirs.
+
+`drive`'s `createFile` action still exists as a general capability (e.g.
+for other tools/flows that want to write a real document), but it is
+**not** part of this recipe — a query with no match is answered with
+"nothing," never with a freshly fabricated file standing in for a real
+answer.
 
 4. Same multi-node safety as the reply queue: `checkPending` claims each
    prompt (`scheduler`-style claim/lease, 10-minute lease) before
