@@ -18,7 +18,30 @@ able to pick up the work rather than have it silently stall. This file
 is the versioned, stable source of truth for how that actually works —
 kept in the MCP server itself (not scattered across chat instructions)
 so it evolves in lockstep with the code, and any compute node — present
-or future — gets the same, current recipe.
+or future — gets the same, current recipe. A session connecting over
+MCP is told to fetch this file immediately (`worker.register`) via the
+server's own `initialize` handshake `instructions` field — not
+something you need to already know to look for.
+
+## Who actually participates, and how much
+
+- **Seth and Johanna** are the current compute nodes (both licensed).
+  Between the two of you, make sure **at least one session is actively
+  checking the queues at any given time** — if you're either of these
+  two people and you're running a session, checking in (per the recipes
+  below) is part of what "being available" means here, not optional
+  background trivia.
+- **Rebecca does not currently have a Claude Code license and is not a
+  compute node.** Never expect her sessions to run any part of this
+  recipe.
+- If Rebecca (or anyone else not named above) is ever given a license,
+  **do not assume they inherit the same participation rules as
+  Seth/Johanna by default** — Seth may want a different, more limited
+  scope for a new participant. Check with Seth for that person's
+  specific instructions before treating a new license as "just another
+  compute node."
+- Encountering a real user this file says nothing about? Same rule as
+  above: don't guess at their participation level, ask Seth.
 
 ### Running more than one node at once, on purpose
 
