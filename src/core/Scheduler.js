@@ -17,7 +17,12 @@ const DEFAULT_LEASE_MS = 10 * 60_000; // 10 minutes
  *
  * Job shape: { id, type, label, schedule, params, attachments, retryPolicy,
  * status, createdAt, nextRunAt, lastRunAt, claimedBy, claimedAt,
- * leaseExpiresAt, history: [{ranAt, status, detail|error, feedback?}] }
+ * leaseExpiresAt, history: [{ranAt, status, detail|error, feedback?,
+ * replyClaimedBy?, replyClaimedAt?, replyLeaseExpiresAt?}] } - the
+ * reply-claim fields are a second, independent claim/lease on a single
+ * history entry (see claimReplyEntry), since "resolve what this reply
+ * said" is a different unit of work, claimed by a different kind of
+ * worker (a Claude compute node, not a job handler), than "run this job."
  *
  * `status`: 'scheduled' (waiting, or due and unclaimed) | 'claimed' (a
  * node is running it right now) | 'stuck' (a claim's lease expired
@@ -116,7 +121,11 @@ class Scheduler {
     return job;
   }
 
-  /** Attaches feedback (e.g. a recipient's response) to a specific run in a job's history. */
+  /**
+   * Attaches feedback (e.g. a recipient's response) to a specific run in a
+   * job's history, releasing any reply-claim on it (see claimReplyEntry) -
+   * once resolved there's nothing left to claim.
+   */
   recordFeedback({ id, runIndex, feedback }) {
     const jobs = this.store.load();
     const job = jobs.find((j) => j.id === id);
@@ -124,7 +133,43 @@ class Scheduler {
     const entry = job.history[runIndex];
     if (!entry) throw new Error(`Job ${id} has no history entry at index ${runIndex}`);
     entry.feedback = feedback;
+    entry.replyClaimedBy = null;
+    entry.replyClaimedAt = null;
+    entry.replyLeaseExpiresAt = null;
     this.store.save(jobs);
+    return job;
+  }
+
+  /**
+   * Atomically claims one job-history entry for reply-resolution, for
+   * `nodeId` - the same claim/lease shape as claimJob/completeJob, but at
+   * history-entry granularity instead of whole-job, since "resolve this
+   * reply" is a different unit of work than "run this job." Lets multiple
+   * Claude compute nodes call disputeResolver.checkReplies concurrently
+   * without two of them ever acting on the same reply: whichever claims
+   * it first is the only one that sees it in its own pending list (see
+   * disputeResolver.js). Succeeds if unclaimed OR if the existing claim's
+   * lease has expired (the node that had it crashed/hung) - that's the
+   * failover path, no separate reclaim step needed. Throws if a *live*
+   * claim is held by someone else, same as claimJob.
+   */
+  claimReplyEntry({ id, runIndex, nodeId, now = new Date(), leaseMs = DEFAULT_LEASE_MS }) {
+    const job = this.store.mutate(id, (j) => {
+      const entry = j.history[runIndex];
+      if (!entry) throw new Error(`Job ${id} has no history entry at index ${runIndex}`);
+      const heldByOther =
+        entry.replyClaimedBy && entry.replyClaimedBy !== nodeId && entry.replyLeaseExpiresAt && new Date(entry.replyLeaseExpiresAt) > now;
+      if (heldByOther) return false;
+      entry.replyClaimedBy = nodeId;
+      entry.replyClaimedAt = now.toISOString();
+      entry.replyLeaseExpiresAt = new Date(now.getTime() + leaseMs).toISOString();
+      return true;
+    });
+    if (!job) {
+      const existing = this.getJob(id);
+      const entry = existing?.history[runIndex];
+      throw new Error(`Reply entry ${id}#${runIndex} is already claimed by ${entry?.replyClaimedBy ?? 'another node'}`);
+    }
     return job;
   }
 

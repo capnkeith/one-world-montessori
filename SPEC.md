@@ -263,6 +263,32 @@ The first tool that talks to a real Google Workspace resource — deliberately j
 
 **Still open:** this only reads (no open/download of actual file *content* yet — Drive API's `files.get` with `alt=media` is the next piece if that's wanted), and it authenticates one account at a time per machine, not yet distributed as an easy setup flow for other users.
 
+## Multiple Claude compute nodes, job queues, and delegation (`worker`)
+
+OWM runs some number of Claude compute nodes at once (today: Seth and
+Johanna — expected to grow), servicing job queues that need continual
+attention. A node's instructions for how to do that live in
+`WORKER.md`, **served over MCP by the `worker` tool's `register`
+action** rather than relying on the node having this repo checked out
+— Johanna's Claude Code session, connected via `claude mcp add`, has no
+reason to ever clone this repo, so a repo-local file (like
+`CLAUDE.md`, meant for developing OWM itself) can't reach her. Any
+node just needs to call `worker.register` once at the start of a
+session to get the current, versioned recipe.
+
+**Multi-node safety**: `scheduler.claimReplyEntry` gives the reply queue
+the same claim/lease protection jobs already had (`claimJob`/
+`completeJob`/`reclaimStaleLeases`) — `disputeResolver.checkReplies`
+claims each reply-bearing entry before surfacing it, so two nodes
+checking around the same time never both act on the same reply. A
+claim's lease expires (10 min) if the node that took it disappears
+before calling `recordFeedback`, so another node's next `checkReplies`
+picks it up automatically — that's the failover path, no manual
+cleanup. Note this only protects one *store* at a time: `JobStore`
+today is a local JSON file per machine, not yet a store multiple
+physical machines actually share — real cross-*machine* failover needs
+that to change too (see "Open items" below).
+
 ## Automated email reply handling (`disputeResolver`, `scheduler`, `mail`)
 
 A job that emails someone (e.g. `send-monthly-invoice-email`) often
@@ -273,11 +299,9 @@ the Anthropic API itself**. `claude.js`'s `interpretReply` action can
 do that same reasoning agentically, but it bills per token, and an
 always-on background loop calling it wasn't something Seth wanted to
 pay for on top of whatever Claude Code/claude.ai plan already covers a
-real session. So the resolving step is done by a Claude Code session
-instead — see `CLAUDE.md` at the repo root, which any session opened
-here picks up automatically, telling it to check for pending replies
-at startup and resolve them directly via `scheduler`/`mail`, under the
-same guardrails.
+real session. So the resolving step is done by a Claude compute node
+instead — see `WORKER.md` (previous section) for the actual recipe and
+the multi-node claim/lease protection around it.
 
 **DLP guardrail (hard, not just prompted):** no OWM Drive content may
 ever leave via email. `mail.send` rejects any attachment not tagged
@@ -286,7 +310,7 @@ ever leave via email. `mail.send` rejects any attachment not tagged
 — see `src/tools/mail.js`'s `assertAttachmentsAllowed`.
 `Scheduler.updateJob` deliberately never touches a job's `attachments`
 or `type`, even if asked to, so nothing (a careless job handler, a
-future Claude tool, an agent following CLAUDE.md) can redirect a job
+future Claude tool, an agent following WORKER.md) can redirect a job
 into attaching something it wasn't created with, or turn it into a
 different kind of job. `escalate_to_seth` (the `claude` tool's
 escape-hatch action) has no attachment parameter at all.
@@ -305,6 +329,18 @@ node bootstrap/install.js <source> [branch]   # staged blue-green install/update
 
 ## Open items / next steps
 
+- **A genuinely shared job store across machines** — `JobStore` is
+  still a local JSON file per machine (see its own doc comment). The
+  claim/lease protection added for both job execution and reply
+  resolution is correct, but only actually prevents double-processing
+  between nodes that share the same store — right now, Seth's and
+  Johanna's machines each have their own separate `jobs.json`, so
+  "start job processing on the existing node" when one disappears
+  isn't real failover yet, just independent nodes each safely handling
+  their own local jobs. Needs a shared backend (reuse the pattern
+  already built for `channel` via Google Sheets/Secret Manager, or a
+  proper Firestore-backed `JobStore`) before that's genuinely true
+  across physical machines.
 - **Real Google Workspace tools** — nothing here talks to Google yet
   otherwise. Apps are intentionally unscoped ("null app"); the first
   real tools to add are whatever the first actual app needs.

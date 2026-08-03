@@ -23,9 +23,9 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
 
   return new Tool({
     name: 'scheduler',
-    version: '2.2.0',
+    version: '2.3.0',
     description:
-      'Generic calendar-based background job scheduling with a claim/lease model for safe multi-node execution: add/list/get/cancel/run jobs, reclaim stale leases, record feedback on a run.',
+      'Generic calendar-based background job scheduling with a claim/lease model for safe multi-node execution: add/list/get/cancel/run jobs, reclaim stale leases, claim/record feedback on a reply-bearing run.',
     mcpInputSchema: {
       action: z
         .enum([
@@ -38,6 +38,7 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
           'runDueJobs',
           'reclaimStaleLeases',
           'recordFeedback',
+          'claimReplyEntry',
         ])
         .optional(),
       type: z.string().optional(),
@@ -108,6 +109,11 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
           if (params.runIndex === undefined) throw new Error('recordFeedback requires runIndex');
           return scheduler.recordFeedback({ id: params.id, runIndex: params.runIndex, feedback: params.feedback });
 
+        case 'claimReplyEntry':
+          if (!params.id) throw new Error('claimReplyEntry requires id');
+          if (params.runIndex === undefined) throw new Error('claimReplyEntry requires runIndex');
+          return scheduler.claimReplyEntry({ id: params.id, runIndex: params.runIndex, nodeId });
+
         default:
           throw new Error(`Unknown scheduler action: ${action}`);
       }
@@ -164,6 +170,16 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
       assert.deepStrictEqual(ran.result.history[0].detail, { echoed: { foo: 'baz' } });
       assert.strictEqual(ran.result.claimedBy, null, 'the claim must be released after completion');
 
+      const claimed = await fakeTool.invoke({ action: 'claimReplyEntry', id: added.result.id, runIndex: 0 });
+      assert.strictEqual(claimed.result.history[0].replyClaimedBy, 'test-node');
+
+      const otherNodeTool = createSchedulerTool({ jobStore: fakeStore, handlers: fakeHandlers, nodeId: 'other-node' });
+      await assert.rejects(
+        () => otherNodeTool.invoke({ action: 'claimReplyEntry', id: added.result.id, runIndex: 0 }),
+        /already claimed by test-node/,
+        'a second node must not be able to claim the same reply entry while the lease is live'
+      );
+
       const fedBack = await fakeTool.invoke({
         action: 'recordFeedback',
         id: added.result.id,
@@ -171,6 +187,7 @@ function createSchedulerTool({ jobStore, handlers = {}, nodeId = `node-${Math.ra
         feedback: { approved: true },
       });
       assert.deepStrictEqual(fedBack.result.history[0].feedback, { approved: true });
+      assert.strictEqual(fedBack.result.history[0].replyClaimedBy, null, 'recordFeedback must release the reply claim');
 
       const reclaimResult = await fakeTool.invoke({ action: 'reclaimStaleLeases' });
       assert.strictEqual(reclaimResult.result.releasedCount, 0, 'nothing is claimed right now, so nothing to reclaim');

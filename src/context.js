@@ -13,6 +13,7 @@ const { InMemoryCatalogEventLog } = require('./core/CatalogEventLog');
 const { FileCatalog } = require('./core/FileCatalog');
 const { JobStore } = require('./core/JobStore');
 const { InvoiceCounter } = require('./core/InvoiceCounter');
+const { WorkerHeartbeat } = require('./core/WorkerHeartbeat');
 const { buildToolSet } = require('./tools');
 const paths = require('./core/paths');
 
@@ -71,6 +72,11 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
   };
   const catalogEventLog = new InMemoryCatalogEventLog({ startSeq: catalog.lastSeq });
   const jobStore = new JobStore(path.join(stateRoot, 'jobs.json'));
+  // JobStore is generic (array + id-based atomic mutate, nothing job-
+  // specific) - reused as-is for the prompt queue's own separate file
+  // rather than duplicating an identical class under a different name.
+  const promptStore = new JobStore(path.join(stateRoot, 'prompts.json'));
+  const workerHeartbeat = new WorkerHeartbeat(path.join(stateRoot, 'worker-heartbeat.json'));
   const invoiceCounter = new InvoiceCounter(path.join(stateRoot, 'invoice-counter.json'));
   const invoiceLogoBuffer = fs.existsSync(INVOICE_LOGO_PATH) ? fs.readFileSync(INVOICE_LOGO_PATH) : null;
 
@@ -85,11 +91,25 @@ function createContext({ stateRoot = paths.STATE_ROOT, channel } = {}) {
     catalogEventLog,
     persistCatalogSnapshot,
     jobStore,
+    promptStore,
+    workerHeartbeat,
     invoiceCounter,
     invoiceLogoBuffer,
   });
 
-  return { secretStore, sharedSecretStore, profile, toolSet, channel: resolvedChannel, catalog, jobStore, stateRoot, instanceId: profileData.instanceId };
+  return {
+    secretStore,
+    sharedSecretStore,
+    profile,
+    toolSet,
+    channel: resolvedChannel,
+    catalog,
+    jobStore,
+    promptStore,
+    workerHeartbeat,
+    stateRoot,
+    instanceId: profileData.instanceId,
+  };
 }
 
 module.exports = { createContext };

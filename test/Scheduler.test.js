@@ -403,3 +403,64 @@ test('an interval schedule requires a positive minutes value', () => {
     /positive minutes value/
   );
 });
+
+function jobWithReplyEntry(store) {
+  const scheduler = new Scheduler({ store });
+  const job = scheduler.addJob({ type: 'send-invoice', schedule: { type: 'monthly', dayOfMonth: 2 }, now: new Date(2026, 7, 1) });
+  store.mutate(job.id, (j) => {
+    j.history.push({ status: 'success', detail: { threadId: 'thread-1' } });
+    return true;
+  });
+  return { scheduler, jobId: job.id };
+}
+
+test('claimReplyEntry lets one node claim a reply-bearing history entry, blocking a second node while the lease is live', () => {
+  const store = fakeStore();
+  const { scheduler, jobId } = jobWithReplyEntry(store);
+  const now = new Date(2026, 7, 2, 9, 0);
+
+  const claimed = scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-a', now });
+  assert.strictEqual(claimed.history[0].replyClaimedBy, 'node-a');
+
+  assert.throws(
+    () => scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-b', now: new Date(now.getTime() + 1000) }),
+    /already claimed by node-a/
+  );
+});
+
+test('claimReplyEntry lets a second node take over once the first node\'s lease has expired (failover)', () => {
+  const store = fakeStore();
+  const { scheduler, jobId } = jobWithReplyEntry(store);
+  const now = new Date(2026, 7, 2, 9, 0);
+
+  scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-a', now, leaseMs: 60_000 });
+
+  const wellAfterExpiry = new Date(now.getTime() + 120_000);
+  const reclaimed = scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-b', now: wellAfterExpiry });
+  assert.strictEqual(
+    reclaimed.history[0].replyClaimedBy,
+    'node-b',
+    'a node that crashed/hung mid-resolution must not permanently block another node from ever picking this up'
+  );
+});
+
+test('claimReplyEntry lets the same node re-claim (e.g. re-checking after a retry) without error', () => {
+  const store = fakeStore();
+  const { scheduler, jobId } = jobWithReplyEntry(store);
+  const now = new Date(2026, 7, 2, 9, 0);
+
+  scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-a', now });
+  const reclaimedBySame = scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-a', now: new Date(now.getTime() + 1000) });
+  assert.strictEqual(reclaimedBySame.history[0].replyClaimedBy, 'node-a');
+});
+
+test('recordFeedback releases the reply claim once resolved', () => {
+  const store = fakeStore();
+  const { scheduler, jobId } = jobWithReplyEntry(store);
+  scheduler.claimReplyEntry({ id: jobId, runIndex: 0, nodeId: 'node-a' });
+
+  const updated = scheduler.recordFeedback({ id: jobId, runIndex: 0, feedback: { outcome: 'approved' } });
+  assert.strictEqual(updated.history[0].replyClaimedBy, null);
+  assert.strictEqual(updated.history[0].replyClaimedAt, null);
+  assert.strictEqual(updated.history[0].replyLeaseExpiresAt, null);
+});

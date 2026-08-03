@@ -15,6 +15,8 @@ const { createMailTool } = require('./mail');
 const { createDisputeResolverTool } = require('./disputeResolver');
 const { createPdfTool } = require('./pdf');
 const { createInvoiceTool } = require('./invoice');
+const { createWorkerTool } = require('./worker');
+const { createPromptQueueTool } = require('./promptQueue');
 
 /**
  * Builds the one shared ToolSet instance that every front end (CLI, MCP
@@ -32,6 +34,8 @@ function buildToolSet({
   catalogEventLog,
   persistCatalogSnapshot,
   jobStore,
+  promptStore,
+  workerHeartbeat,
   invoiceCounter,
   invoiceLogoBuffer,
 }) {
@@ -106,6 +110,12 @@ function buildToolSet({
     getMailTool: () => mailTool,
   });
   toolSet.register(disputeResolverTool);
+
+  const workerTool = createWorkerTool();
+  toolSet.register(workerTool);
+
+  const promptQueueTool = createPromptQueueTool({ promptStore, heartbeat: workerHeartbeat, nodeId: instanceId });
+  toolSet.register(promptQueueTool);
 
   return toolSet;
 }

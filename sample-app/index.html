@@ -529,7 +529,6 @@
       if (!a || !b || a.type !== b.type) return false;
       if (a.type === 'search') return a.query === b.query;
       if (a.type === 'folder') return a.folderId === b.folderId;
-      if (a.type === 'claude') return false; // each answer is its own distinct view, never de-duped
       return true; // 'root'
     }
 
@@ -546,8 +545,6 @@
         } else if (view.type === 'search') {
           const body = await invoke('drive', { action: 'search', query: view.query });
           renderEntryList(treePane, body.result.results, { emptyMessage: '(no matches)' });
-        } else if (view.type === 'claude') {
-          renderEntryList(treePane, view.files, { emptyMessage: '(no files)', headerText: view.summary });
         }
       } catch (err) {
         treePane.innerHTML = `<span class="muted">could not load: ${err.message}</span>`;
@@ -634,32 +631,68 @@
       if (e.key === 'Escape') hideContextMenu();
     });
 
-    // --- ask claude: greyed out until the tool actually exists ---
+    // --- ask claude: submits to promptQueue (answered by a Claude compute
+    // node, never the paid API - see WORKER.md) instead of calling
+    // claude.query directly. Greyed out until promptQueueHealthy is true,
+    // which reflects whether any compute node has actually checked the
+    // queue recently, not just whether the tool exists - a prompt
+    // submitted with no one minding the queue would just sit unanswered.
 
-    async function checkAskClaudeAvailability(tools) {
-      const available = tools.some((t) => t.name === 'claude');
+    let promptQueueToolPresent = false;
+    let promptQueueHealthy = false;
+
+    function updateAskBarAvailability() {
+      const available = promptQueueToolPresent && promptQueueHealthy;
       askInput.disabled = !available;
-      askInput.placeholder = available ? 'Ask Claude...' : 'Ask Claude (not available yet)';
+      askInput.placeholder = available
+        ? 'Ask Claude...'
+        : promptQueueToolPresent
+          ? 'Ask Claude (no compute node available right now)'
+          : 'Ask Claude (not available yet)';
       askBar.classList.toggle('disabled-bar', !available);
     }
 
-    // A files-type answer becomes a real history entry, same as browsing or
-    // searching — so any folder Claude surfaces can be navigated into, and
-    // Back returns to whatever was showing before the question was asked.
-    // A text-type answer isn't a "location" at all, so it just replaces the
-    // preview pane directly, with no history entry.
+    async function checkAskClaudeAvailability(tools) {
+      promptQueueToolPresent = tools.some((t) => t.name === 'promptQueue');
+      updateAskBarAvailability();
+    }
+
+    async function pollPromptQueueHealth() {
+      if (!promptQueueToolPresent) return;
+      try {
+        const body = await invoke('promptQueue', { action: 'health' });
+        promptQueueHealthy = Boolean(body.result.available);
+      } catch (err) {
+        promptQueueHealthy = false;
+      }
+      updateAskBarAvailability();
+    }
+    setInterval(pollPromptQueueHealth, 30_000);
+
+    async function pollForAnswer(id, { intervalMs = 3_000, timeoutMs = 5 * 60_000 } = {}) {
+      const startedAt = Date.now();
+      for (;;) {
+        const body = await invoke('promptQueue', { action: 'getPrompt', id });
+        if (body.result.answered) return body.result.answer;
+        if (Date.now() - startedAt > timeoutMs) {
+          throw new Error('no compute node answered this in time — it may still get answered later, try asking again');
+        }
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      }
+    }
+
+    // Plain-text answers only (no files-vs-text distinction) - a compute
+    // node just writes a reply, same as answering an email reply, not a
+    // forced tool call the way the old API-driven claude.query worked.
     askInput.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter' || askInput.disabled) return;
       const query = askInput.value.trim();
       if (!query) return;
-      previewEl.textContent = 'Asking Claude...';
+      previewEl.textContent = 'Waiting for a Claude compute node to answer...';
       try {
-        const body = await invoke('claude', { action: 'query', query });
-        if (body.result.type === 'files') {
-          await navigateTo({ type: 'claude', summary: body.result.summary, files: body.result.files });
-        } else {
-          previewEl.textContent = body.result.text ?? JSON.stringify(body.result, null, 2);
-        }
+        const submitted = await invoke('promptQueue', { action: 'submit', query });
+        const answer = await pollForAnswer(submitted.result.id);
+        previewEl.textContent = answer;
       } catch (err) {
         previewEl.textContent = `Ask Claude failed: ${err.message}`;
       }
@@ -942,6 +975,7 @@
         const tools = await res.json();
         setStatus(true, 'Connected.');
         checkAskClaudeAvailability(tools);
+        pollPromptQueueHealth();
         refreshPeers();
       } catch (err) {
         setStatus(false, `Not connected — is the local server running? Start it with: npm run http (${err.message})`);
