@@ -20,6 +20,27 @@ kept in the MCP server itself (not scattered across chat instructions)
 so it evolves in lockstep with the code, and any compute node — present
 or future — gets the same, current recipe.
 
+### Running more than one node at once, on purpose
+
+Concurrency here isn't just a passive failover safety net for when a node
+disappears — it's fine, expected, and often the right call to
+deliberately run more than one node servicing these queues at the same
+time, e.g. by launching additional Agent-tool subagents from within a
+single Claude Code session, each independently following this same
+recipe. Claim/lease (see "Multiple compute nodes, no double-processing"
+below) is what makes this safe: two nodes checking the same queue at the
+same moment never act on the same entry, so adding more never risks
+double-processing anything.
+
+When there's a real backlog, or a human is actively waiting on an answer
+(the prompt queue directly gates the sample app's "Ask Claude" bar — see
+"Keep this queue actually alive" below), bump the number of concurrent
+nodes rather than leaving one node to work through everything
+sequentially. If you do launch more than one, have each prioritize
+whichever queue is currently the more time-sensitive one (usually the
+prompt queue, since a person is watching a spinner) instead of assuming
+a fixed check-replies-then-prompts order.
+
 ## The email-reply-resolution queue
 
 Some scheduled jobs email someone and later need a human/agent to read
@@ -191,6 +212,22 @@ personal "My Drive"), actually search it before answering:
    both answer the same prompt. A node that claims one and disappears
    before calling `recordAnswer` releases it automatically once the
    lease expires — the next `checkPending` (from any node) picks it up.
+
+### Report progress on anything slow
+
+The app has no timeout on waiting for an answer by design (retrying
+doesn't make a slow query faster — same worker, same backlog), so its
+only feedback while you're still working is whatever you post via the
+`reportProgress` action: `{action: 'reportProgress', id, progress:
+'<short status>'}`. If a query is going to take more than a few seconds
+(walking a large Drive tree, checking several folders, anything with
+more than one real step), call this once per meaningful step with a
+short human-readable status (e.g. "searching Drive folders...",
+"checking file metadata..."). It's purely cosmetic — only the current
+claimant may set it (ownership-checked the same way claims are), and it
+has no effect on the answer itself — but it's the difference between the
+asker watching a frozen spinner for two minutes and seeing what's
+actually happening.
 
 ### Keep this queue actually alive
 

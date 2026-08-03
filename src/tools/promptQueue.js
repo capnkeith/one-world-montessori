@@ -22,13 +22,14 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
 
   return new Tool({
     name: 'promptQueue',
-    version: '1.1.0',
+    version: '1.2.0',
     description:
-      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, recordAnswer (text plus optional Drive entries), getPrompt to poll, health to check if a provider is available.',
+      'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, reportProgress for a short status update while working, recordAnswer (text plus optional Drive entries), getPrompt to poll, health to check if a provider is available.',
     mcpInputSchema: {
-      action: z.enum(['submit', 'checkPending', 'recordAnswer', 'getPrompt', 'health']).optional(),
+      action: z.enum(['submit', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'health']).optional(),
       query: z.string().optional(),
       id: z.string().optional(),
+      progress: z.string().optional(),
       answer: z
         .object({
           text: z.string(),
@@ -72,6 +73,11 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
           return { pending };
         }
 
+        case 'reportProgress':
+          if (!params.id) throw new Error('reportProgress requires id');
+          if (!params.progress) throw new Error('reportProgress requires progress');
+          return promptQueue.reportProgress({ id: params.id, nodeId, progress: params.progress });
+
         case 'recordAnswer':
           if (!params.id) throw new Error('recordAnswer requires id');
           if (!params.answer?.text) throw new Error('recordAnswer requires answer.text');
@@ -81,7 +87,13 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
           if (!params.id) throw new Error('getPrompt requires id');
           const prompt = promptQueue.getPrompt(params.id);
           if (!prompt) throw new Error(`No prompt with id ${params.id}`);
-          return { id: prompt.id, query: prompt.query, answered: Boolean(prompt.answeredAt), answer: prompt.answer };
+          return {
+            id: prompt.id,
+            query: prompt.query,
+            answered: Boolean(prompt.answeredAt),
+            answer: prompt.answer,
+            progress: prompt.progress ?? null,
+          };
         }
 
         case 'health':
@@ -144,6 +156,18 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
 
       const midway = await fakeTool.invoke({ action: 'getPrompt', id: submitted.result.id });
       assert.strictEqual(midway.result.answered, false);
+      assert.strictEqual(midway.result.progress, null, 'no progress reported yet');
+
+      // Only the node holding the current claim may report progress.
+      await assert.rejects(
+        () => otherNodeTool.invoke({ action: 'reportProgress', id: submitted.result.id, progress: 'snooping' }),
+        /claimed by test-node/
+      );
+      await fakeTool.invoke({ action: 'reportProgress', id: submitted.result.id, progress: 'searching Drive folders...' });
+      const midwayWithProgress = await fakeTool.invoke({ action: 'getPrompt', id: submitted.result.id });
+      assert.strictEqual(midwayWithProgress.result.progress, 'searching Drive folders...');
+
+      await assert.rejects(() => fakeTool.invoke({ action: 'reportProgress', id: submitted.result.id }), /requires progress/);
 
       await assert.rejects(
         () => fakeTool.invoke({ action: 'recordAnswer', id: submitted.result.id, answer: { text: '' } }),
@@ -174,6 +198,11 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
       // Once answered, it must never surface as pending again.
       const checkedAfterAnswer = await fakeTool.invoke({ action: 'checkPending' });
       assert.strictEqual(checkedAfterAnswer.result.pending.length, 0);
+
+      await assert.rejects(
+        () => fakeTool.invoke({ action: 'reportProgress', id: submitted.result.id, progress: 'too late' }),
+        /already answered/
+      );
 
       await assert.rejects(() => fakeTool.invoke({ action: 'getPrompt', id: 'not-a-real-id' }), /No prompt with id/);
 

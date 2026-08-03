@@ -119,6 +119,36 @@ test('recordAnswer accepts a structured { text, entries } answer just as freely 
   assert.deepStrictEqual(answered.answer, { text: 'One folder found.', entries });
 });
 
+test('reportProgress sets a status string, but only for whoever holds the current claim', () => {
+  const store = fakeStore();
+  const queue = new PromptQueue({ store });
+  const prompt = queue.submit({ query: 'oldest 10 photos', now: new Date(2026, 7, 1) });
+  queue.claimPrompt({ id: prompt.id, nodeId: 'node-a', now: new Date(2026, 7, 1, 0, 1) });
+
+  const updated = queue.reportProgress({ id: prompt.id, nodeId: 'node-a', progress: 'walking Drive folders...' });
+  assert.strictEqual(updated.progress, 'walking Drive folders...');
+
+  assert.throws(
+    () => queue.reportProgress({ id: prompt.id, nodeId: 'node-b', progress: 'snooping' }),
+    /claimed by node-a, not node-b/
+  );
+});
+
+test('reportProgress refuses once a prompt is already answered', () => {
+  const store = fakeStore();
+  const queue = new PromptQueue({ store });
+  const prompt = queue.submit({ query: 'hi' });
+  queue.claimPrompt({ id: prompt.id, nodeId: 'node-a' });
+  queue.recordAnswer({ id: prompt.id, answer: 'here you go' });
+
+  assert.throws(() => queue.reportProgress({ id: prompt.id, nodeId: 'node-a', progress: 'too late' }), /already answered/);
+});
+
+test('reportProgress throws a clear error for a nonexistent prompt', () => {
+  const queue = new PromptQueue({ store: fakeStore() });
+  assert.throws(() => queue.reportProgress({ id: 'not-a-real-id', nodeId: 'node-a', progress: 'x' }), /No prompt with id/);
+});
+
 test('getPrompt returns null for an id that does not exist, listPrompts returns everything', () => {
   const store = fakeStore();
   const queue = new PromptQueue({ store });

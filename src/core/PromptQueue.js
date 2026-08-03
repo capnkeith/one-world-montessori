@@ -51,6 +51,7 @@ class PromptQueue {
       submittedAt: now.toISOString(),
       answeredAt: null,
       answer: null,
+      progress: null,
       claimedBy: null,
       claimedAt: null,
       leaseExpiresAt: null,
@@ -91,6 +92,30 @@ class PromptQueue {
       if (!existing) throw new Error(`No prompt with id ${id}`);
       if (existing.answeredAt) throw new Error(`Prompt ${id} is already answered`);
       throw new Error(`Prompt ${id} is already claimed by ${existing.claimedBy ?? 'another node'}`);
+    }
+    return prompt;
+  }
+
+  /**
+   * Lets whichever node currently holds the claim post a short status
+   * string while it works (e.g. "searching Drive folders...") - purely
+   * cosmetic, so the app has something better than a frozen spinner to
+   * show during a genuinely slow query. Ownership-checked (must be the
+   * current claimant) so a stale/expired node can't overwrite what the
+   * node that actually took over is reporting.
+   */
+  reportProgress({ id, nodeId, progress, now = new Date() }) {
+    const prompt = this.store.mutate(id, (p) => {
+      if (p.answeredAt) return false;
+      if (p.claimedBy !== nodeId) return false;
+      p.progress = progress;
+      return true;
+    });
+    if (!prompt) {
+      const existing = this.getPrompt(id);
+      if (!existing) throw new Error(`No prompt with id ${id}`);
+      if (existing.answeredAt) throw new Error(`Prompt ${id} is already answered`);
+      throw new Error(`Prompt ${id} is claimed by ${existing.claimedBy ?? 'no one'}, not ${nodeId}`);
     }
     return prompt;
   }
