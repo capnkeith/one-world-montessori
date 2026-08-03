@@ -96,7 +96,7 @@ function buildToolSet({
 
   schedulerTool = createSchedulerTool({
     jobStore,
-    handlers: buildJobHandlers({ getMailTool: () => mailTool, getInvoiceTool: () => invoiceTool }),
+    handlers: buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool }),
     nodeId: instanceId,
   });
   toolSet.register(schedulerTool);

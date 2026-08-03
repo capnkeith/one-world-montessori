@@ -4,157 +4,169 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { buildJobHandlers } = require('../src/tools/jobHandlers');
 
-function fakeInvoiceTool(startAt = 0) {
-  let n = startAt;
+function fakeMailTool({ messages = [] } = {}) {
   const calls = [];
   return {
     calls,
     invoke: async (params) => {
       calls.push(params);
-      n += 1;
-      const invoiceNumber = `OWM-INV-${String(n).padStart(6, '0')}`;
-      return {
-        result: {
-          invoiceNumber,
-          filename: `${invoiceNumber}.pdf`,
-          mimeType: 'application/pdf',
-          contentBase64: Buffer.from('%PDF-fake').toString('base64'),
-        },
-      };
+      if (params.action === 'listMessages') {
+        return { result: { messages } };
+      }
+      if (params.action === 'forward') {
+        return { result: { sent: true, id: 'sent-1', threadId: params.threadId ?? 'new-thread' } };
+      }
+      if (params.action === 'send') {
+        return { result: { sent: true, id: 'sent-2', threadId: 'thread-x' } };
+      }
+      throw new Error(`unexpected mail action ${params.action}`);
     },
   };
 }
 
-test('send-monthly-invoice-email builds an invoice via the invoice tool and emails it with an incrementing number', async () => {
-  const sentParams = [];
-  const fakeMailTool = {
+function fakeSchedulerTool(initialJobs = []) {
+  const jobs = [...initialJobs];
+  const calls = [];
+  let nextId = 1;
+  return {
+    jobs,
+    calls,
     invoke: async (params) => {
-      sentParams.push(params);
-      return { result: { sent: true, id: 'msg-1', threadId: 'thread-1' } };
+      calls.push(params);
+      if (params.action === 'listJobs') return { result: { jobs } };
+      if (params.action === 'addJob') {
+        const job = { id: `pester-${nextId++}`, status: 'scheduled', history: [], ...params };
+        jobs.push(job);
+        return { result: job };
+      }
+      if (params.action === 'runJob') return { result: { ranJobId: params.id } };
+      if (params.action === 'cancelJob') {
+        const job = jobs.find((j) => j.id === params.id);
+        if (job) job.status = 'cancelled';
+        return { result: job };
+      }
+      throw new Error(`unexpected scheduler action ${params.action}`);
     },
   };
-  const invoiceTool = fakeInvoiceTool();
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => invoiceTool });
+}
 
-  const result = await handlers['send-monthly-invoice-email']({ to: 'businessmanager@oneworldmontessori.org' });
+test('send-monthly-invoice-email forwards the latest matching message as-is when one is found', async () => {
+  const mailTool = fakeMailTool({ messages: [{ id: 'msg-1', threadId: 'thread-1' }] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'job-1', label: 'Monthly invoice', history: [] };
+  const result = await handlers['send-monthly-invoice-email']({ to: 'businessmanager@oneworldmontessori.org' }, job);
 
   assert.strictEqual(result.sent, true);
-  assert.strictEqual(result.invoiceNumber, 'OWM-INV-000001');
-  assert.strictEqual(invoiceTool.calls.length, 1);
-  assert.strictEqual(invoiceTool.calls[0].action, 'build');
-  assert.strictEqual(sentParams.length, 1);
-  assert.strictEqual(sentParams[0].to, 'businessmanager@oneworldmontessori.org');
-  assert.match(sentParams[0].subject, /OWM-INV-000001/);
-  assert.strictEqual(sentParams[0].attachments.length, 1);
-  assert.strictEqual(sentParams[0].attachments[0].filename, 'OWM-INV-000001.pdf');
-  assert.strictEqual(sentParams[0].attachments[0].mimeType, 'application/pdf');
-  assert.strictEqual(
-    sentParams[0].attachments[0].source,
-    'rendered',
-    'the invoice tool built this fresh from structured params, never from Drive — mail.js requires this tag'
-  );
+  assert.strictEqual(result.forwardedMessageId, 'msg-1');
+  const listCall = mailTool.calls.find((c) => c.action === 'listMessages');
+  assert.match(listCall.query, /anthropic/);
+  const forwardCall = mailTool.calls.find((c) => c.action === 'forward');
+  assert.strictEqual(forwardCall.id, 'msg-1');
+  assert.strictEqual(forwardCall.to, 'businessmanager@oneworldmontessori.org');
+  assert.deepStrictEqual(forwardCall.cc, ['seth@oneworldmontessori.org']);
+  assert.strictEqual(schedulerTool.calls.length, 0, 'must never touch the scheduler when the invoice was found immediately');
 });
 
-test('DLP guardrail: job-defined attachments (fixed on the job at creation) are forwarded and tagged job-defined', async () => {
-  const sentParams = [];
-  const fakeMailTool = {
-    invoke: async (params) => {
-      sentParams.push(params);
-      return { result: { sent: true } };
-    },
-  };
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+test('send-monthly-invoice-email threads into the last successful run\'s conversation instead of starting fresh', async () => {
+  const mailTool = fakeMailTool({ messages: [{ id: 'msg-2', threadId: 'thread-2' }] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
 
   const job = {
     id: 'job-1',
-    attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc' }],
+    label: 'Monthly invoice',
+    history: [{ status: 'success', detail: { threadId: 'existing-thread' } }],
   };
   await handlers['send-monthly-invoice-email']({ to: 'a@b.com' }, job);
 
-  assert.strictEqual(sentParams[0].attachments.length, 2, 'rendered invoice plus the job-defined attachment');
-  const jobDefined = sentParams[0].attachments.find((a) => a.filename === 'contract.pdf');
-  assert.ok(jobDefined);
-  assert.strictEqual(jobDefined.source, 'job-defined');
+  const forwardCall = mailTool.calls.find((c) => c.action === 'forward');
+  assert.strictEqual(forwardCall.threadId, 'existing-thread');
 });
 
-test('with no job argument at all (real-world runJob always passes one), job-defined attachments default to none', async () => {
-  const sentParams = [];
-  const fakeMailTool = {
-    invoke: async (params) => {
-      sentParams.push(params);
-      return { result: { sent: true } };
-    },
-  };
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+test('send-monthly-invoice-email starts a daily pester job and runs it immediately when nothing is found', async () => {
+  const mailTool = fakeMailTool({ messages: [] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
 
-  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
-  assert.strictEqual(sentParams[0].attachments.length, 1, 'just the rendered invoice, no job-defined attachments to forward');
+  const job = { id: 'job-1', label: 'Monthly invoice', history: [] };
+  const result = await handlers['send-monthly-invoice-email']({ to: 'businessmanager@oneworldmontessori.org' }, job);
+
+  assert.strictEqual(result.sent, false);
+  const addCall = schedulerTool.calls.find((c) => c.action === 'addJob');
+  assert.ok(addCall, 'must create a pester job');
+  assert.strictEqual(addCall.type, 'pester-for-missing-invoice');
+  assert.strictEqual(addCall.schedule.type, 'interval');
+  assert.strictEqual(addCall.params.parentJobId, 'job-1');
+  const runCall = schedulerTool.calls.find((c) => c.action === 'runJob');
+  assert.ok(runCall, 'must fire the first reminder today, not wait a full day');
 });
 
-test('always cc\'s Seth, merging with whatever cc list a job already has', async () => {
-  const sentParams = [];
-  const fakeMailTool = {
-    invoke: async (params) => {
-      sentParams.push(params);
-      return { result: { sent: true } };
-    },
+test('send-monthly-invoice-email reuses an existing pester job instead of creating a duplicate', async () => {
+  const mailTool = fakeMailTool({ messages: [] });
+  const existingPester = {
+    id: 'pester-existing',
+    type: 'pester-for-missing-invoice',
+    status: 'scheduled',
+    params: { parentJobId: 'job-1' },
+    history: [],
   };
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+  const schedulerTool = fakeSchedulerTool([existingPester]);
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
 
-  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
-  assert.deepStrictEqual(sentParams[0].cc, ['seth@oneworldmontessori.org']);
+  await handlers['send-monthly-invoice-email']({ to: 'a@b.com' }, { id: 'job-1', label: 'Monthly invoice', history: [] });
 
-  await handlers['send-monthly-invoice-email']({ to: 'a@b.com', cc: 'rebecca@oneworldmontessori.org' });
-  assert.deepStrictEqual(sentParams[1].cc, ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org']);
+  assert.strictEqual(schedulerTool.calls.filter((c) => c.action === 'addJob').length, 0, 'must not create a second pester job');
+  const runCall = schedulerTool.calls.find((c) => c.action === 'runJob');
+  assert.strictEqual(runCall.id, 'pester-existing');
+});
 
-  await handlers['send-monthly-invoice-email']({ to: 'a@b.com', cc: ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org'] });
-  assert.deepStrictEqual(
-    sentParams[2].cc,
-    ['rebecca@oneworldmontessori.org', 'seth@oneworldmontessori.org'],
-    'must not duplicate Seth if he is already in the list'
+test('pester-for-missing-invoice forwards and cancels itself the moment the invoice shows up', async () => {
+  const mailTool = fakeMailTool({ messages: [{ id: 'msg-3', threadId: 'thread-3' }] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
+
+  const job = { id: 'pester-1', params: { to: 'businessmanager@oneworldmontessori.org' }, history: [] };
+  const result = await handlers['pester-for-missing-invoice'](job.params, job);
+
+  assert.strictEqual(result.sent, true);
+  assert.strictEqual(result.stoppedPestering, true);
+  const cancelCall = schedulerTool.calls.find((c) => c.action === 'cancelJob');
+  assert.strictEqual(cancelCall.id, 'pester-1');
+  assert.strictEqual(
+    mailTool.calls.some((c) => c.action === 'send'),
+    false,
+    'must not also send a pester email once the real invoice was found'
   );
 });
 
-test('each run gets the next invoice number, not a repeat', async () => {
-  const fakeMailTool = { invoke: async () => ({ result: { sent: true } }) };
-  const invoiceTool = fakeInvoiceTool();
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => invoiceTool });
+test('pester-for-missing-invoice emails the pester list when still nothing is found', async () => {
+  const mailTool = fakeMailTool({ messages: [] });
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
 
-  const first = await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
-  const second = await handlers['send-monthly-invoice-email']({ to: 'a@b.com' });
-  assert.strictEqual(first.invoiceNumber, 'OWM-INV-000001');
-  assert.strictEqual(second.invoiceNumber, 'OWM-INV-000002');
-});
+  const job = { id: 'pester-1', params: { to: 'businessmanager@oneworldmontessori.org' }, history: [] };
+  const result = await handlers['pester-for-missing-invoice'](job.params, job);
 
-test('billTo and lineItems from job params are passed through to the invoice tool', async () => {
-  const invoiceTool = fakeInvoiceTool();
-  const fakeMailTool = { invoke: async () => ({ result: { sent: true } }) };
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => invoiceTool });
-
-  await handlers['send-monthly-invoice-email']({
-    to: 'a@b.com',
-    billTo: 'Some Real Client',
-    lineItems: [{ description: 'Real service', amount: 150 }],
-  });
-
-  assert.strictEqual(invoiceTool.calls[0].billTo, 'Some Real Client');
-  assert.deepStrictEqual(invoiceTool.calls[0].lineItems, [{ description: 'Real service', amount: 150 }]);
+  assert.strictEqual(result.sent, false);
+  const sendCall = mailTool.calls.find((c) => c.action === 'send');
+  assert.ok(sendCall);
+  assert.match(sendCall.to, /seth@oneworldmontessori\.org/);
+  assert.match(sendCall.to, /seth\.keith@citrix\.com/);
+  assert.strictEqual(schedulerTool.calls.some((c) => c.action === 'cancelJob'), false, 'must not cancel itself while still missing');
 });
 
 test('send-recurring-test-email sends a plain no-attachment email with sensible defaults', async () => {
-  const sentParams = [];
-  const fakeMailTool = {
-    invoke: async (params) => {
-      sentParams.push(params);
-      return { result: { sent: true } };
-    },
-  };
-  const handlers = buildJobHandlers({ getMailTool: () => fakeMailTool, getInvoiceTool: () => fakeInvoiceTool() });
+  const mailTool = fakeMailTool();
+  const schedulerTool = fakeSchedulerTool();
+  const handlers = buildJobHandlers({ getMailTool: () => mailTool, getSchedulerTool: () => schedulerTool });
 
   await handlers['send-recurring-test-email']({ to: 'seth@oneworldmontessori.org' });
 
-  assert.strictEqual(sentParams[0].to, 'seth@oneworldmontessori.org');
-  assert.strictEqual(sentParams[0].subject, 'Recurring test email');
-  assert.match(sentParams[0].text, /reply stop/i);
-  assert.strictEqual(sentParams[0].attachments, undefined, 'no attachments at all, not even an empty array requiring a source tag');
+  const sendCall = mailTool.calls.find((c) => c.action === 'send');
+  assert.strictEqual(sendCall.to, 'seth@oneworldmontessori.org');
+  assert.strictEqual(sendCall.subject, 'Recurring test email');
+  assert.match(sendCall.text, /reply stop/i);
+  assert.strictEqual(sendCall.attachments, undefined, 'no attachments at all, not even an empty array requiring a source tag');
 });

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { buildMimeMessage, encodeHeaderValue } = require('../src/core/mime');
+const { buildMimeMessage, buildForwardMimeMessage, encodeHeaderValue } = require('../src/core/mime');
 
 test('a plain-text-only message has no multipart wrapper', () => {
   const raw = buildMimeMessage({ to: 'a@b.com', subject: 'Hi', text: 'hello there' });
@@ -97,4 +97,27 @@ test('a custom boundary is used verbatim instead of a random one, for determinis
   });
   assert.match(raw, /boundary="fixed-boundary-123"/);
   assert.match(raw, /--fixed-boundary-123--/);
+});
+
+test('buildForwardMimeMessage embeds the original as a real message/rfc822 part, not a generic attachment', () => {
+  const originalRaw = 'From: someone@example.com\r\nSubject: Original subject\r\n\r\nOriginal body text.';
+  const raw = buildForwardMimeMessage({
+    to: 'johanna@oneworldmontessori.org',
+    cc: 'seth@oneworldmontessori.org',
+    subject: 'Fwd: Original subject',
+    introText: 'Forwarding this along.',
+    originalRawBase64Url: Buffer.from(originalRaw, 'utf8').toString('base64url'),
+    boundary: 'fixed-boundary',
+  });
+
+  assert.match(raw, /^To: johanna@oneworldmontessori\.org/);
+  assert.match(raw, /^Cc: seth@oneworldmontessori\.org/m);
+  assert.match(raw, /Content-Type: message\/rfc822/);
+  assert.match(raw, /Content-Disposition: inline/);
+  assert.match(raw, /Forwarding this along\./);
+  // The original message's own headers/body must appear verbatim, not re-encoded as base64 attachment bytes.
+  assert.match(raw, /From: someone@example\.com/);
+  assert.match(raw, /Subject: Original subject/);
+  assert.match(raw, /Original body text\./);
+  assert.doesNotMatch(raw, /Content-Disposition: attachment/, 'a forward is not a generic file attachment');
 });

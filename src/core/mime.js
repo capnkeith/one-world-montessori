@@ -80,8 +80,40 @@ function buildMimeMessage({ to, cc, subject, text, html, attachments = [], bound
   return lines.join('\r\n');
 }
 
+/**
+ * Builds a genuine "forward as attachment" message: a short intro plus
+ * the original message embedded verbatim as a message/rfc822 part (the
+ * same shape real mail clients use for "Forward as attachment") — not a
+ * generic file attachment, so it carries the original's real headers,
+ * formatting, and any of ITS OWN attachments intact. `originalRawBase64Url`
+ * is the exact bytes Gmail's own `format: 'raw'` returns for the message
+ * being forwarded.
+ */
+function buildForwardMimeMessage({ to, cc, subject, introText, originalRawBase64Url, boundary = defaultBoundary() }) {
+  const lines = [`To: ${to}`];
+  if (cc) lines.push(`Cc: ${Array.isArray(cc) ? cc.join(', ') : cc}`);
+  lines.push(
+    `Subject: ${encodeHeaderValue(subject)}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    introText ?? '',
+    `--${boundary}`,
+    'Content-Type: message/rfc822',
+    'Content-Disposition: inline',
+    '',
+    Buffer.from(originalRawBase64Url, 'base64url').toString('utf8'),
+    `--${boundary}--`
+  );
+  return lines.join('\r\n');
+}
+
 function defaultBoundary() {
   return `owm_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-module.exports = { buildMimeMessage, encodeHeaderValue };
+module.exports = { buildMimeMessage, buildForwardMimeMessage, encodeHeaderValue };

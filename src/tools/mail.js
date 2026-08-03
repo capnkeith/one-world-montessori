@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const { z } = require('zod');
 const { Tool } = require('../core/Tool');
 const { getGmailClient } = require('../core/gmailAuth');
-const { buildMimeMessage } = require('../core/mime');
+const { buildMimeMessage, buildForwardMimeMessage } = require('../core/mime');
 
 function decodeBodyData(bodyData) {
   return Buffer.from(bodyData, 'base64url').toString('utf8');
@@ -119,17 +119,18 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
   return new Tool({
     name: 'mail',
-    version: '1.2.0',
+    version: '1.3.0',
     description:
       'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default.',
     mcpInputSchema: {
-      action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami']).optional(),
+      action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami', 'forward']).optional(),
       account: z.string().optional(),
       to: z.string().optional(),
       cc: z.union([z.string(), z.array(z.string())]).optional(),
       subject: z.string().optional(),
       text: z.string().optional(),
       html: z.string().optional(),
+      introText: z.string().optional(),
       attachments: z
         .array(
           z.object({
@@ -196,6 +197,31 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         return { emailAddress: res.data.emailAddress };
       }
 
+      if (action === 'forward') {
+        if (!params.id) throw new Error('forward requires id');
+        if (!params.to) throw new Error('forward requires to');
+        const res = await client.users.messages.get({ userId: 'me', id: params.id, format: 'raw' });
+        const originalRawBase64Url = res.data.raw;
+        const decoded = Buffer.from(originalRawBase64Url, 'base64url').toString('utf8');
+        const originalSubjectMatch = decoded.match(/^Subject:\s*(.+)$/im);
+        const originalSubject = originalSubjectMatch ? originalSubjectMatch[1].trim() : '(no subject)';
+        const subject = params.subject ?? `Fwd: ${originalSubject}`;
+
+        const raw = Buffer.from(
+          buildForwardMimeMessage({
+            to: params.to,
+            cc: params.cc,
+            subject,
+            introText: params.introText,
+            originalRawBase64Url,
+          }),
+          'utf8'
+        ).toString('base64url');
+        const requestBody = params.threadId ? { raw, threadId: params.threadId } : { raw };
+        const sendRes = await client.users.messages.send({ userId: 'me', requestBody });
+        return { sent: true, id: sendRes.data.id, threadId: sendRes.data.threadId, forwardedSubject: originalSubject };
+      }
+
       throw new Error(`Unknown mail action: ${action}`);
     },
 
@@ -259,7 +285,14 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
               return { data: { id: 'sent-1', threadId: 'thread-1' } };
             },
             list: async () => ({ data: { messages: [{ id: 'msg-1', threadId: 'thread-1' }] } }),
-            get: async ({ id }) => ({ data: fakeMessages[id] }),
+            get: async ({ id, format }) => {
+              if (format === 'raw' && id === 'msg-to-forward') {
+                const rawOriginal =
+                  'From: invoice+statements@mail.anthropic.com\r\nSubject: Your receipt from Anthropic, PBC #1234\r\n\r\nReceipt body here.';
+                return { data: { raw: Buffer.from(rawOriginal, 'utf8').toString('base64url') } };
+              }
+              return { data: fakeMessages[id] };
+            },
           },
           threads: {
             get: async ({ id }) => ({ data: { id, messages: [fakeMessages['msg-1']] } }),
@@ -377,6 +410,23 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
         attachments: [{ filename: 'contract.pdf', mimeType: 'application/pdf', contentBase64: 'abc', source: 'job-defined' }],
       });
       assert.strictEqual(jobDefinedSend.result.sent, true, 'job-defined attachments are allowed through');
+
+      // forward: a genuine "forward as attachment" (message/rfc822), not a
+      // generic file attachment - defaults the subject from the original,
+      // and the original's real headers/body appear verbatim in what's sent.
+      const forwarded = await fakeTool.invoke({
+        action: 'forward',
+        id: 'msg-to-forward',
+        to: 'johanna@oneworldmontessori.org',
+        introText: 'Forwarding along.',
+      });
+      assert.strictEqual(forwarded.result.sent, true);
+      assert.strictEqual(forwarded.result.forwardedSubject, 'Your receipt from Anthropic, PBC #1234');
+      const forwardedRaw = Buffer.from(sentRawMessages[sentRawMessages.length - 1], 'base64url').toString('utf8');
+      assert.match(forwardedRaw, /Subject: Fwd: Your receipt from Anthropic, PBC #1234/);
+      assert.match(forwardedRaw, /Content-Type: message\/rfc822/);
+      assert.match(forwardedRaw, /Receipt body here\./, 'the original message content must appear verbatim');
+      assert.match(forwardedRaw, /Forwarding along\./);
 
       // Multi-account: a named account gets its own client, cached
       // separately, without disturbing the default account's client.
