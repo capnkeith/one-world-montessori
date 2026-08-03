@@ -162,11 +162,24 @@ function createFakeDriveClient() {
 async function driveInternalTest() {
   const fakeClient = createFakeDriveClient();
   const profile = fakeProfile();
+  const factoryCalls = [];
   const fakeTool = createDriveTool({
     secretStore: { get: () => null, set: () => {} },
     profile,
-    driveClientFactory: async () => fakeClient,
+    driveClientFactory: async ({ allowConsent } = {}) => {
+      factoryCalls.push(Boolean(allowConsent));
+      return fakeClient;
+    },
   });
+
+  // authorize: the one and only action allowed to request a live consent
+  // flow (regression: 2026-08-02 out-of-place-consent-prompt incident —
+  // see googleAuth.js). Runs first, before the client is cached by any
+  // other action, so this genuinely proves what allowConsent it passed.
+  const authorized = await fakeTool.invoke({ action: 'authorize' });
+  assert.strictEqual(authorized.result.authorized, true);
+  assert.strictEqual(authorized.result.emailAddress, 'fake@example.com');
+  assert.deepStrictEqual(factoryCalls, [true], 'authorize must request allowConsent: true');
 
   const browsed = await fakeTool.invoke({ action: 'browse', folderId: 'root' });
   assert.strictEqual(browsed.result.entries.length, 3);
@@ -225,6 +238,21 @@ async function driveInternalTest() {
   assert.strictEqual(copyResult.result.copied, true);
   assert.strictEqual(copyResult.result.newId, 'file-1-copy');
 
+  // A fresh tool that never called authorize must still request
+  // allowConsent: false for an ordinary action — a plain browse must
+  // never be able to trigger a live consent flow as a side effect.
+  const freshFactoryCalls = [];
+  const freshTool = createDriveTool({
+    secretStore: { get: () => null, set: () => {} },
+    profile: fakeProfile(),
+    driveClientFactory: async ({ allowConsent } = {}) => {
+      freshFactoryCalls.push(Boolean(allowConsent));
+      return fakeClient;
+    },
+  });
+  await freshTool.invoke({ action: 'browse', folderId: 'root' });
+  assert.deepStrictEqual(freshFactoryCalls, [false], 'an ordinary action must never request allowConsent: true');
+
   return { passed: true };
 }
 
@@ -243,10 +271,10 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
 
   return new Tool({
     name: 'drive',
-    version: '2.1.0',
-    description: 'Real Google Drive browsing and organizing for the account that authorized it.',
+    version: '2.2.0',
+    description: 'Real Google Drive browsing and organizing for the account that authorized it. Call `authorize` once before anything else.',
     mcpInputSchema: {
-      action: z.enum(['setup', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy', 'whoami']).optional(),
+      action: z.enum(['setup', 'authorize', 'browse', 'search', 'getContent', 'getRichContent', 'createFolder', 'move', 'hideFolder', 'unhideFolder', 'trash', 'rename', 'copy', 'whoami']).optional(),
       clientJsonPath: z.string().optional(),
       folderId: z.string().optional(),
       query: z.string().optional(),
@@ -265,6 +293,17 @@ function createDriveTool({ secretStore, profile, driveClientFactory = getDriveCl
         JSON.parse(contents); // fail fast if it's not real JSON before storing it
         secretStore.set('google_oauth_client', contents);
         return { configured: true };
+      }
+
+      // The one and only place a real consent flow may start — see
+      // googleAuth.js's header for why every other action below must
+      // never be able to trigger one as a side effect.
+      if (action === 'authorize') {
+        if (!cachedClient) {
+          cachedClient = await driveClientFactory({ secretStore, allowConsent: true });
+        }
+        const res = await cachedClient.about.get({ fields: 'user' });
+        return { authorized: true, emailAddress: res.data.user.emailAddress };
       }
 
       if (!cachedClient) {

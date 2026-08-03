@@ -109,21 +109,26 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
   // side without one's consent overwriting the other's cached client.
   const cachedClients = new Map();
 
-  async function getClient(account) {
+  // allowConsent only ever flows through from the explicit 'authorize'
+  // action below — never from any other action, so a consent flow can
+  // never start as a side effect of a plain send/list/forward call, no
+  // matter which process happens to run it (see gmailAuth.js's header
+  // for the 2026-08-02 incident this closes).
+  async function getClient(account, { allowConsent = false } = {}) {
     const key = account ?? 'default';
     if (!cachedClients.has(key)) {
-      cachedClients.set(key, await gmailClientFactory({ secretStore, account }));
+      cachedClients.set(key, await gmailClientFactory({ secretStore, account, allowConsent }));
     }
     return cachedClients.get(key);
   }
 
   return new Tool({
     name: 'mail',
-    version: '1.3.0',
+    version: '1.4.0',
     description:
-      'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default.',
+      'Real Gmail send/read for whichever account(s) authorized it — sending emails and checking for replies. Pass `account` to target a specific named identity beyond the default. Call `authorize` once per account before anything else.',
     mcpInputSchema: {
-      action: z.enum(['send', 'listMessages', 'getMessage', 'getThread', 'whoami', 'forward']).optional(),
+      action: z.enum(['authorize', 'send', 'listMessages', 'getMessage', 'getThread', 'whoami', 'forward']).optional(),
       account: z.string().optional(),
       to: z.string().optional(),
       cc: z.union([z.string(), z.array(z.string())]).optional(),
@@ -149,6 +154,16 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
 
     run: async (params) => {
       const action = params?.action ?? 'listMessages';
+
+      // The one and only place a real consent flow may start — a
+      // deliberate call naming exactly which account to authorize, never
+      // an implicit fallback inside another action.
+      if (action === 'authorize') {
+        const client = await getClient(params?.account, { allowConsent: true });
+        const res = await client.users.getProfile({ userId: 'me' });
+        return { authorized: true, emailAddress: res.data.emailAddress };
+      }
+
       const client = await getClient(params?.account);
 
       if (action === 'send') {
@@ -303,8 +318,8 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       const factoryCalls = [];
       const fakeTool = createMailTool({
         secretStore: { get: () => null, set: () => {} },
-        gmailClientFactory: async ({ account }) => {
-          factoryCalls.push(account);
+        gmailClientFactory: async ({ account, allowConsent }) => {
+          factoryCalls.push({ account, allowConsent });
           return {
             ...fakeClient,
             users: {
@@ -438,8 +453,26 @@ function createMailTool({ secretStore, gmailClientFactory = getGmailClient }) {
       await fakeTool.invoke({ action: 'whoami', account: 'seth' });
       assert.deepStrictEqual(
         factoryCalls,
-        [undefined, 'seth'],
+        [
+          { account: undefined, allowConsent: false },
+          { account: 'seth', allowConsent: false },
+        ],
         'each distinct account must only build its client once (cached thereafter), and the default/named accounts must not collide'
+      );
+
+      // authorize: the one and only action allowed to request a live
+      // consent flow (regression: 2026-08-02 — an ordinary listMessages
+      // call against an unauthorized account silently popped a real
+      // browser consent screen). Every other action above must have
+      // requested allowConsent: false, which the assertion just above
+      // already confirms.
+      const authorized = await fakeTool.invoke({ action: 'authorize', account: 'newacct' });
+      assert.strictEqual(authorized.result.authorized, true);
+      assert.strictEqual(authorized.result.emailAddress, 'newacct@oneworldmontessori.org');
+      assert.deepStrictEqual(
+        factoryCalls.at(-1),
+        { account: 'newacct', allowConsent: true },
+        'authorize must be the only action that ever requests allowConsent: true'
       );
 
       return { passed: true };

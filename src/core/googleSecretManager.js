@@ -14,10 +14,20 @@ const getSecretManagerAuth = getCloudPlatformAuth;
 /**
  * Reads the latest version of a Secret Manager secret. Returns null
  * (rather than throwing) when the secret exists but has no version yet,
- * or doesn't exist at all — both mean "nothing shared yet", not an error.
+ * or doesn't exist at all, or this node has never authorized shared
+ * cloud-platform access at all — all three mean "nothing shared yet
+ * (from here)", not an error. A plain read must never be the thing that
+ * makes an unauthorized node try to open a consent browser (see
+ * googleCloudAuth.js's header).
  */
 async function fetchSecret({ secretStore, projectId = DEFAULT_PROJECT_ID, name, fetchImpl = fetch }) {
-  const auth = await getSecretManagerAuth({ secretStore });
+  let auth;
+  try {
+    auth = await getSecretManagerAuth({ secretStore });
+  } catch (err) {
+    if (err.code === 'GOOGLE_AUTH_REQUIRED') return null;
+    throw err;
+  }
   const { token } = await auth.getAccessToken();
   const res = await fetchImpl(
     `https://secretmanager.googleapis.com/v1/projects/${projectId}/secrets/${name}/versions/latest:access`,

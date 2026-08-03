@@ -39,8 +39,8 @@ test('authorizing a new named account never touches or requires the default acco
     // credentials, not silently fall back to (or demand) the default key.
     const secretStore = fakeSecretStore({ gmail_refresh_token: 'fake-default-token' });
     await assert.rejects(
-      () => getGmailClient({ secretStore, account: 'seth' }),
-      /no interactive terminal/,
+      () => getGmailClient({ secretStore, account: 'seth', allowConsent: true }),
+      /a real interactive terminal/,
       'must attempt its own consent flow for the missing seth-specific token, not reuse the default token'
     );
   } finally {
@@ -53,7 +53,26 @@ test('refuses to launch a real consent flow when there is no interactive termina
   process.stdout.isTTY = false;
   try {
     const secretStore = fakeSecretStore();
-    await assert.rejects(() => getGmailClient({ secretStore }), /no interactive terminal/);
+    await assert.rejects(() => getGmailClient({ secretStore, allowConsent: true }), /a real interactive terminal/);
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+  }
+});
+
+test('never attempts a consent flow at all when allowConsent is not passed, even with an interactive terminal (regression: 2026-08-02 out-of-place-consent-prompt incident)', async () => {
+  const originalIsTTY = process.stdout.isTTY;
+  process.stdout.isTTY = true;
+  try {
+    const secretStore = fakeSecretStore();
+    await assert.rejects(
+      () => getGmailClient({ secretStore }),
+      /authorize it explicitly first/,
+      'a missing token must never silently start a consent flow as a side effect of an ordinary call, regardless of whether a browser could technically be opened'
+    );
+    await assert.rejects(
+      () => getGmailClient({ secretStore, account: 'newacct' }),
+      /authorize it explicitly first/
+    );
   } finally {
     process.stdout.isTTY = originalIsTTY;
   }

@@ -20,12 +20,18 @@ const SCOPES = ['https://www.googleapis.com/auth/cloud-platform'];
 /**
  * Same per-user OAuth shape as googleAuth.js's getDriveClient (bundled
  * installed-app client id/secret, per-user consent, refresh token cached
- * in SecretStore) — see that file's header for the full reasoning. Also
- * carries the same interactive-terminal guard added after the
- * 2026-08-01 incident: a background process must never be able to pop a
- * real browser window on its own.
+ * in SecretStore) — see that file's header for the full reasoning.
+ *
+ * A consent flow only ever runs when the caller passes `allowConsent:
+ * true` — never as a side effect of an ordinary read/write like
+ * fetchSecret/addSecretVersion. See gmailAuth.js's header for the
+ * 2026-08-02 incident this mirrors. `fetchSecret` (googleSecretManager.js)
+ * treats the resulting GOOGLE_AUTH_REQUIRED error the same as "secret
+ * doesn't exist yet" — so an unauthorized node's plain reads (e.g.
+ * dropboxAuth.js checking whether another node already published a
+ * shared token) degrade to "nothing shared" instead of throwing.
  */
-async function getCloudPlatformAuth({ secretStore }) {
+async function getCloudPlatformAuth({ secretStore, allowConsent = false }) {
   const configuredClientJson = secretStore.get('google_oauth_client');
   const clientJson = configuredClientJson ? JSON.parse(configuredClientJson) : DEFAULT_CLIENT_JSON;
   const { client_id, client_secret } = clientJson.installed;
@@ -37,12 +43,20 @@ async function getCloudPlatformAuth({ secretStore }) {
     return oauth2Client;
   }
 
+  if (!allowConsent) {
+    const err = new Error(
+      'No cached cloud-platform credentials. A consent flow never starts as a side effect of another action ' +
+        '(see the 2026-08-02 out-of-place-consent-prompt note in TODO.md) — authorize it explicitly first.'
+    );
+    err.code = 'GOOGLE_AUTH_REQUIRED';
+    throw err;
+  }
+
   if (!isInteractiveConsentAllowed()) {
     throw new Error(
-      'No cached cloud-platform credentials, and this process has no interactive terminal to open a consent ' +
-        'browser from — refusing to try (see the 2026-08-01 runaway-browser incident notes in TODO.md). Run ' +
-        '`node src/cli.js call dropbox \'{"action":"browse"}\'` from a real terminal once to authorize this ' +
-        'machine for shared cloud-platform access.'
+      'Authorizing shared cloud-platform access needs a real interactive terminal to open a consent browser ' +
+        'from, and this process has none — refusing to try (see the 2026-08-01 runaway-browser incident notes ' +
+        'in TODO.md).'
     );
   }
   const tokens = await runConsentFlow(oauth2Client);

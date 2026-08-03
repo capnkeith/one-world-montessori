@@ -28,10 +28,10 @@ function createDropboxTool({ secretStore, sharedSecretStore, dropboxClientFactor
 
   return new Tool({
     name: 'dropbox',
-    version: '1.0.0',
-    description: 'Real Dropbox browsing (read-only) for the account that authorized it.',
+    version: '1.1.0',
+    description: 'Real Dropbox browsing (read-only) for the account that authorized it. Call `authorize` once (after `setup`) before anything else.',
     mcpInputSchema: {
-      action: z.enum(['setup', 'browse', 'search', 'getContent']).optional(),
+      action: z.enum(['setup', 'authorize', 'browse', 'search', 'getContent']).optional(),
       appKey: z.string().optional(),
       folderId: z.string().optional(),
       query: z.string().optional(),
@@ -45,6 +45,17 @@ function createDropboxTool({ secretStore, sharedSecretStore, dropboxClientFactor
         if (!params.appKey) throw new Error('setup requires appKey');
         secretStore.set('dropbox_app_key', params.appKey);
         return { configured: true };
+      }
+
+      // The one and only place a real consent flow may start — see
+      // dropboxAuth.js's header for why every other action below must
+      // never be able to trigger one as a side effect.
+      if (action === 'authorize') {
+        if (!cachedClient) {
+          cachedClient = await dropboxClientFactory({ secretStore, sharedSecretStore, allowConsent: true });
+        }
+        const res = await cachedClient.call('users/get_current_account', {});
+        return { authorized: true, email: res.email ?? null };
       }
 
       if (!cachedClient) {
@@ -87,14 +98,31 @@ function createDropboxTool({ secretStore, sharedSecretStore, dropboxClientFactor
           if (endpoint === 'files/search_v2') {
             return { matches: [{ metadata: { metadata: { '.tag': 'file', id: 'id:file1', name: 'report.pdf', path_lower: '/report.pdf' } } }] };
           }
+          if (endpoint === 'users/get_current_account') {
+            return { email: 'fake@example.com' };
+          }
           throw new Error(`unexpected endpoint ${endpoint}`);
         },
         download: async () => 'fake file content',
       };
+      const factoryCalls = [];
       const fakeTool = createDropboxTool({
         secretStore: { get: () => null, set: () => {} },
-        dropboxClientFactory: async () => fakeClient,
+        dropboxClientFactory: async ({ allowConsent } = {}) => {
+          factoryCalls.push(Boolean(allowConsent));
+          return fakeClient;
+        },
       });
+
+      // authorize: the one and only action allowed to request a live
+      // consent flow (regression: 2026-08-02 out-of-place-consent-prompt
+      // incident — see dropboxAuth.js). Runs first, before the client is
+      // cached by any other action, so this genuinely proves what
+      // allowConsent it passed.
+      const authorized = await fakeTool.invoke({ action: 'authorize' });
+      assert.strictEqual(authorized.result.authorized, true);
+      assert.strictEqual(authorized.result.email, 'fake@example.com');
+      assert.deepStrictEqual(factoryCalls, [true], 'authorize must request allowConsent: true');
 
       const browsed = await fakeTool.invoke({ action: 'browse', folderId: 'root' });
       assert.strictEqual(browsed.result.entries.length, 2);
@@ -105,6 +133,19 @@ function createDropboxTool({ secretStore, sharedSecretStore, dropboxClientFactor
 
       const content = await fakeTool.invoke({ action: 'getContent', path: '/report.pdf' });
       assert.strictEqual(content.result.content, 'fake file content');
+
+      // A fresh tool that never called authorize must still request
+      // allowConsent: false for an ordinary action.
+      const freshFactoryCalls = [];
+      const freshTool = createDropboxTool({
+        secretStore: { get: () => null, set: () => {} },
+        dropboxClientFactory: async ({ allowConsent } = {}) => {
+          freshFactoryCalls.push(Boolean(allowConsent));
+          return fakeClient;
+        },
+      });
+      await freshTool.invoke({ action: 'browse', folderId: 'root' });
+      assert.deepStrictEqual(freshFactoryCalls, [false], 'an ordinary action must never request allowConsent: true');
 
       return { passed: true };
     },

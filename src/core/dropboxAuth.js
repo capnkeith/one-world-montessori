@@ -16,8 +16,13 @@ const TOKEN_URL = 'https://api.dropboxapi.com/oauth2/token';
  * identifies the application (safe to distribute to every install,
  * same reasoning as Drive's Desktop OAuth client), the refresh token
  * is per-user and never shared.
+ *
+ * A consent flow only ever runs when the caller passes `allowConsent:
+ * true` (via the `authorize` action — see dropbox.js) — never as a
+ * side effect of an ordinary action like `browse` or `search`. See
+ * gmailAuth.js's header for the 2026-08-02 incident this mirrors.
  */
-async function getDropboxClient({ secretStore, sharedSecretStore }) {
+async function getDropboxClient({ secretStore, sharedSecretStore, allowConsent = false }) {
   const appKey = secretStore.get('dropbox_app_key');
   if (!appKey) {
     throw new Error(
@@ -30,18 +35,28 @@ async function getDropboxClient({ secretStore, sharedSecretStore }) {
   // This is one shared Dropbox account across every node - before running
   // our own interactive consent, check whether some other node already
   // completed it and published the resulting token via Secret Manager.
+  // (getShared itself never triggers a cloud-platform consent flow either
+  // — see googleCloudAuth.js/googleSecretManager.js — so this is always a
+  // plain read, not a second place a browser could pop from.)
   if (!refreshToken && sharedSecretStore) {
     refreshToken = await sharedSecretStore.getShared('dropbox_refresh_token');
   }
 
   if (!refreshToken) {
+    if (!allowConsent) {
+      const err = new Error(
+        'No cached Dropbox credentials (checked locally and, if configured, Secret Manager). A consent flow ' +
+          'never starts as a side effect of another action (see the 2026-08-02 out-of-place-consent-prompt note ' +
+          'in TODO.md) — authorize it explicitly first: node src/cli.js call dropbox \'{"action":"authorize"}\''
+      );
+      err.code = 'DROPBOX_AUTH_REQUIRED';
+      throw err;
+    }
     if (!isInteractiveConsentAllowed()) {
       throw new Error(
-        'No cached Dropbox credentials (checked locally and, if configured, Secret Manager), and this process ' +
-          'has no interactive terminal to open a consent browser from — refusing to try (a background/service ' +
-          'process silently popping browser windows is exactly what caused the 2026-08-01 incident). Run ' +
-          '`node src/cli.js call dropbox \'{"action":"browse"}\'` from a real terminal once to authorize this ' +
-          'machine, then background processes will reuse the cached token.'
+        'Authorizing Dropbox needs a real interactive terminal to open a consent browser from, and this process ' +
+          'has none — refusing to try (see the 2026-08-01 runaway-browser incident notes in TODO.md). Run the ' +
+          'authorize call above from a real terminal.'
       );
     }
     refreshToken = await runConsentFlow(appKey);

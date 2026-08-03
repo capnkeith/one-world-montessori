@@ -55,7 +55,22 @@ test('getDriveClient refuses to launch a real consent flow when there is no inte
   process.stdout.isTTY = false;
   try {
     const secretStore = fakeSecretStore(); // no cached refresh token at all
-    await assert.rejects(() => getDriveClient({ secretStore }), /no interactive terminal/);
+    await assert.rejects(() => getDriveClient({ secretStore, allowConsent: true }), /a real interactive terminal/);
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+  }
+});
+
+test('getDriveClient never attempts a consent flow without allowConsent, even with an interactive terminal (regression: 2026-08-02 out-of-place-consent-prompt incident)', async () => {
+  const originalIsTTY = process.stdout.isTTY;
+  process.stdout.isTTY = true;
+  try {
+    const secretStore = fakeSecretStore();
+    await assert.rejects(
+      () => getDriveClient({ secretStore }),
+      /authorize it explicitly first/,
+      'a missing token must never silently start a consent flow as a side effect of an ordinary call'
+    );
   } finally {
     process.stdout.isTTY = originalIsTTY;
   }

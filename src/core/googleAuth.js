@@ -34,8 +34,15 @@ const SCOPES = ['https://www.googleapis.com/auth/drive'];
  * secret. Each user still does their own real consent and gets their own
  * refresh token reflecting their own Drive permissions; `setup` remains
  * available to override the bundled client if a different one is ever needed.
+ *
+ * A consent flow only ever runs when the caller passes `allowConsent:
+ * true` (via the `authorize` action — see drive.js) — never as a side
+ * effect of an ordinary action like `browse` or `search`. See
+ * gmailAuth.js's header for the 2026-08-02 incident this mirrors: the
+ * old guard only asked "can this process open a browser," not "did
+ * anyone actually intend to authorize a new account right now."
  */
-async function getDriveClient({ secretStore }) {
+async function getDriveClient({ secretStore, allowConsent = false }) {
   const configuredClientJson = secretStore.get('google_oauth_client');
   const clientJson = configuredClientJson ? JSON.parse(configuredClientJson) : DEFAULT_CLIENT_JSON;
   const { client_id, client_secret } = clientJson.installed;
@@ -45,12 +52,20 @@ async function getDriveClient({ secretStore }) {
   if (refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
   } else {
+    if (!allowConsent) {
+      const err = new Error(
+        'No cached Google Drive credentials. A consent flow never starts as a side effect of another action ' +
+          '(see the 2026-08-02 out-of-place-consent-prompt note in TODO.md) — authorize it explicitly first: ' +
+          'node src/cli.js call drive \'{"action":"authorize"}\''
+      );
+      err.code = 'GOOGLE_AUTH_REQUIRED';
+      throw err;
+    }
     if (!isInteractiveConsentAllowed()) {
       throw new Error(
-        'No cached Google credentials, and this process has no interactive terminal to open a consent ' +
-          "browser from — refusing to try (a background/service process silently popping browser windows " +
-          'is exactly what caused the 2026-08-01 incident). Run `node src/cli.js call drive \'{"action":"browse"}\'` ' +
-          'from a real terminal once to authorize this machine, then background processes will reuse the cached token.'
+        'Authorizing Google Drive needs a real interactive terminal to open a consent browser from, and this ' +
+          'process has none — refusing to try (see the 2026-08-01 runaway-browser incident notes in TODO.md). ' +
+          'Run the authorize call above from a real terminal.'
       );
     }
     const tokens = await runConsentFlow(oauth2Client);

@@ -83,6 +83,34 @@ test('getContent downloads file content by path', async () => {
   assert.strictEqual(result.content, 'content of /report.pdf');
 });
 
+test('authorize is the only action that requests allowConsent: true (regression: 2026-08-02 out-of-place-consent-prompt incident)', async () => {
+  const factoryCalls = [];
+  const tool = createDropboxTool({
+    secretStore: fakeSecretStore(),
+    dropboxClientFactory: async ({ allowConsent } = {}) => {
+      factoryCalls.push(Boolean(allowConsent));
+      return { ...fakeDropboxClient(FIXTURE_ENTRIES), call: async (endpoint) => (endpoint === 'users/get_current_account' ? { email: 'fake@example.com' } : fakeDropboxClient(FIXTURE_ENTRIES).call(endpoint, {})) };
+    },
+  });
+
+  await tool.invoke({ action: 'authorize' });
+  assert.deepStrictEqual(factoryCalls, [true]);
+});
+
+test('an ordinary action on a never-authorized tool requests allowConsent: false', async () => {
+  const factoryCalls = [];
+  const tool = createDropboxTool({
+    secretStore: fakeSecretStore(),
+    dropboxClientFactory: async ({ allowConsent } = {}) => {
+      factoryCalls.push(Boolean(allowConsent));
+      return fakeDropboxClient(FIXTURE_ENTRIES);
+    },
+  });
+
+  await tool.invoke({ action: 'browse', folderId: 'root' });
+  assert.deepStrictEqual(factoryCalls, [false]);
+});
+
 test('realWorldTest skips gracefully when no folderId is supplied (never makes a real Dropbox call by accident)', async () => {
   const tool = createDropboxTool({
     secretStore: fakeSecretStore(),

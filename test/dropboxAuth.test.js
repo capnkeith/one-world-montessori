@@ -24,7 +24,22 @@ test('getDropboxClient refuses to launch a real consent flow when there is no in
   process.stdout.isTTY = false;
   try {
     const secretStore = fakeSecretStore({ dropbox_app_key: 'fake-app-key' }); // app key set, no refresh token
-    await assert.rejects(() => getDropboxClient({ secretStore }), /no interactive terminal/);
+    await assert.rejects(() => getDropboxClient({ secretStore, allowConsent: true }), /a real interactive terminal/);
+  } finally {
+    process.stdout.isTTY = originalIsTTY;
+  }
+});
+
+test('getDropboxClient never attempts a consent flow without allowConsent, even with an interactive terminal (regression: 2026-08-02 out-of-place-consent-prompt incident)', async () => {
+  const originalIsTTY = process.stdout.isTTY;
+  process.stdout.isTTY = true;
+  try {
+    const secretStore = fakeSecretStore({ dropbox_app_key: 'fake-app-key' });
+    await assert.rejects(
+      () => getDropboxClient({ secretStore }),
+      /authorize it explicitly first/,
+      'a missing token must never silently start a consent flow as a side effect of an ordinary call'
+    );
   } finally {
     process.stdout.isTTY = originalIsTTY;
   }
@@ -54,7 +69,10 @@ test('getDropboxClient still refuses to open a browser when sharedSecretStore ha
   try {
     const secretStore = fakeSecretStore({ dropbox_app_key: 'fake-app-key' });
     const sharedSecretStore = { getShared: async () => null };
-    await assert.rejects(() => getDropboxClient({ secretStore, sharedSecretStore }), /no interactive terminal/);
+    await assert.rejects(
+      () => getDropboxClient({ secretStore, sharedSecretStore, allowConsent: true }),
+      /a real interactive terminal/
+    );
   } finally {
     process.stdout.isTTY = originalIsTTY;
   }

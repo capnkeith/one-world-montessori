@@ -29,11 +29,22 @@ function refreshTokenKey(account) {
  * Same per-user OAuth shape as googleAuth.js's getDriveClient (bundled
  * installed-app client id/secret, per-account consent, refresh token
  * cached in SecretStore) — see that file's header for the full
- * reasoning. Carries the same interactive-terminal guard added after
- * the 2026-08-01 incident: a background process must never be able to
- * pop a real browser window on its own.
+ * reasoning.
+ *
+ * A consent flow only ever runs when the caller passes `allowConsent:
+ * true` — never as a side effect of an ordinary action like
+ * `listMessages` or `send`. Added after a 2026-08-02 incident: an
+ * exploratory `listMessages` call against an unauthorized account (run
+ * from an agent-driven `node src/cli.js` invocation, not a human typing
+ * at a real terminal) silently popped a real Google consent screen,
+ * which Seth had to interpret and accept blind. The old guard
+ * (`isInteractiveConsentAllowed`) only asked "can this process open a
+ * browser," which every `cli.js` invocation answers yes to — it never
+ * asked "did anyone actually intend to authorize a new account right
+ * now." That's still checked below (a second, defense-in-depth gate),
+ * but it's no longer the *only* gate.
  */
-async function getGmailClient({ secretStore, account }) {
+async function getGmailClient({ secretStore, account, allowConsent = false }) {
   const configuredClientJson = secretStore.get('google_oauth_client');
   const clientJson = configuredClientJson ? JSON.parse(configuredClientJson) : DEFAULT_CLIENT_JSON;
   const { client_id, client_secret } = clientJson.installed;
@@ -46,13 +57,23 @@ async function getGmailClient({ secretStore, account }) {
     return google.gmail({ version: 'v1', auth: oauth2Client });
   }
 
+  if (!allowConsent) {
+    const err = new Error(
+      `No cached Gmail credentials for ${account ? `the "${account}" account` : 'the default account'}. A consent ` +
+        "flow never starts as a side effect of another action (see the 2026-08-02 out-of-place-consent-prompt " +
+        `note in TODO.md) — authorize it explicitly first: node src/cli.js call mail ` +
+        `'{"action":"authorize"${account ? `,"account":"${account}"` : ''}}'`
+    );
+    err.code = 'GOOGLE_AUTH_REQUIRED';
+    throw err;
+  }
+
   if (!isInteractiveConsentAllowed()) {
     throw new Error(
-      `No cached Gmail credentials for ${account ? `the "${account}" account` : 'the default account'}, and this ` +
-        'process has no interactive terminal to open a consent browser from — refusing to try (see the ' +
-        '2026-08-01 runaway-browser incident notes in TODO.md). Run ' +
-        `\`node src/cli.js call mail '{"action":"listMessages"${account ? `,"account":"${account}"` : ''}}'\` from ` +
-        'a real terminal, signed into whichever account this should send/read as, to authorize this machine.'
+      `Authorizing ${account ? `the "${account}" account` : 'the default account'} needs a real interactive ` +
+        'terminal to open a consent browser from, and this process has none — refusing to try (see the ' +
+        '2026-08-01 runaway-browser incident notes in TODO.md). Run the authorize call above from a real terminal, ' +
+        'signed into whichever account this should send/read as.'
     );
   }
   const tokens = await runConsentFlow(oauth2Client);
