@@ -22,7 +22,7 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
 
   return new Tool({
     name: 'promptQueue',
-    version: '1.2.0',
+    version: '1.3.0',
     description:
       'Queue for "Ask Claude" prompts, answered by a Claude compute node instead of the paid API: submit a prompt, checkPending to claim and answer, reportProgress for a short status update while working, recordAnswer (text plus optional Drive entries), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
     mcpInputSchema: {
