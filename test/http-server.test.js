@@ -132,6 +132,68 @@ test('an admin-command "update-now" message from another peer triggers the updat
   }
 });
 
+test('a restarted server never replays an already-handled update-now command (regression: real crash-loop incident, 2026-08-03)', async () => {
+  const sharedChannel = new InMemoryChannel();
+  const sharedStateRoot = tempStateRoot();
+  let firstInstanceUpdateCalls = 0;
+
+  const first = startServer({
+    port: 0,
+    stateRoot: sharedStateRoot,
+    channel: sharedChannel,
+    adminPollIntervalMs: 20,
+    runUpdateAndExit: () => {
+      firstInstanceUpdateCalls += 1;
+    },
+  });
+  await listen(first);
+
+  try {
+    await sharedChannel.send({ from: 'other-peer', to: 'broadcast', type: 'admin-command', payload: { command: 'update-now' } });
+
+    let deadline = Date.now() + 2000;
+    while (firstInstanceUpdateCalls < 1 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.strictEqual(firstInstanceUpdateCalls, 1, 'the first instance must handle the real command exactly once');
+
+    // Give the watermark save a moment to land on disk before "restarting".
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    first.close();
+
+    // Simulates exactly what happened on the real machine: the process
+    // restarts (same stateRoot, so the persisted watermark carries over)
+    // while the SAME message is still sitting in the channel's history
+    // (it hasn't been re-sent - this is the one message from before).
+    let secondInstanceUpdateCalls = 0;
+    const second = startServer({
+      port: 0,
+      stateRoot: sharedStateRoot,
+      channel: sharedChannel,
+      adminPollIntervalMs: 20,
+      runUpdateAndExit: () => {
+        secondInstanceUpdateCalls += 1;
+      },
+    });
+    await listen(second);
+
+    try {
+      // Let several poll cycles pass - the bug would call runUpdateAndExit
+      // on the very first one.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      assert.strictEqual(secondInstanceUpdateCalls, 0, 'a restarted instance must never replay a command it already handled before restarting');
+    } finally {
+      second.close();
+    }
+  } finally {
+    try {
+      first.close();
+    } catch {
+      // already closed above in the success path
+    }
+  }
+});
+
 test('an unrelated broadcast message never triggers the update-and-exit hook', async () => {
   const sharedChannel = new InMemoryChannel();
   let updateCalled = false;

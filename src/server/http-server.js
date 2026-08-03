@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createContext } = require('../context');
-const { HTTP_DEFAULT_PORT, SECRETS_DIR } = require('../core/paths');
+const { HTTP_DEFAULT_PORT, SECRETS_DIR, STATE_ROOT } = require('../core/paths');
 const { createSecretStore } = require('../core/SecretStore');
 const { autoDiscoverChannel } = require('../core/autoDiscoverChannel');
 
@@ -26,6 +26,42 @@ const CHECK_FOR_UPDATE_PATH = path.join(__dirname, '..', '..', 'bootstrap', 'che
 function defaultRunUpdateAndExit() {
   spawnSync(process.execPath, [CHECK_FOR_UPDATE_PATH], { stdio: 'inherit' });
   process.exit(0);
+}
+
+/**
+ * Regression (2026-08-03, real incident on a real machine): the
+ * admin-command watermark used to be in-memory only, on the assumption
+ * that "a restart is exactly what a successful update does anyway" - but
+ * the *message itself* (see Channel's messageTtlMs, ~10 minutes) outlives
+ * that assumption. A node whose restart cycle is faster than the
+ * message's TTL for any reason (here: genuinely crash-looping from an
+ * unrelated cause) kept re-seeing and re-acting on the SAME already-handled
+ * update-now command on every single restart - turning one real admin
+ * command into a self-perpetuating restart storm until the supervisor
+ * gave up entirely (confirmed via a real supervisor.log: 6 fast failures
+ * in a row, ~10-15s apart, every one caused by this). Persisting the
+ * watermark to disk - and saving it BEFORE calling runUpdateAndExit,
+ * which never returns - is what actually breaks the loop.
+ */
+function adminWatermarkPath(stateRoot) {
+  return path.join(stateRoot ?? STATE_ROOT, 'admin-command-watermark.json');
+}
+
+function loadAdminSinceSeq(stateRoot) {
+  try {
+    return JSON.parse(fs.readFileSync(adminWatermarkPath(stateRoot), 'utf8')).sinceSeq ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveAdminSinceSeq(stateRoot, seq) {
+  try {
+    fs.mkdirSync(stateRoot ?? STATE_ROOT, { recursive: true });
+    fs.writeFileSync(adminWatermarkPath(stateRoot), JSON.stringify({ sinceSeq: seq }));
+  } catch (err) {
+    console.error('failed to persist admin-command watermark:', err.message);
+  }
 }
 
 /**
@@ -74,18 +110,25 @@ function startServer({
 
   // Lets another peer trigger 'Update server now' from the sample app's
   // peer-icon context menu (channel.send) instead of waiting for this
-  // instance's own next-boot check. sinceSeq is in-memory only — fine for
-  // a live-running process; nothing here needs to survive a restart since
-  // a restart is exactly what a successful update does anyway.
-  let adminSinceSeq = 0;
+  // instance's own next-boot check. Persisted (see loadAdminSinceSeq's
+  // header comment) so an already-handled command is never replayed
+  // after a restart, no matter why that restart happened.
+  let adminSinceSeq = loadAdminSinceSeq(stateRoot);
   const pollAdminCommands = () => {
     toolSet.invoke('channel', { action: 'receive', sinceSeq: adminSinceSeq }).then(({ result }) => {
+      let sawUpdateNow = false;
       for (const msg of result.messages) {
         adminSinceSeq = Math.max(adminSinceSeq, msg.seq);
         if (msg.type === 'admin-command' && msg.payload && msg.payload.command === 'update-now') {
-          console.log('[admin-command] update-now received — checking for updates...');
-          runUpdateAndExit();
+          sawUpdateNow = true;
         }
+      }
+      // Must persist before acting - runUpdateAndExit (in real use) calls
+      // process.exit and never returns, so anything after it would never run.
+      saveAdminSinceSeq(stateRoot, adminSinceSeq);
+      if (sawUpdateNow) {
+        console.log('[admin-command] update-now received — checking for updates...');
+        runUpdateAndExit();
       }
     }).catch((err) => {
       console.error('admin-command poll failed:', err.message);
