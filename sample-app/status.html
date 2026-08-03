@@ -70,6 +70,7 @@
     <h1>OWM Status</h1>
     <div style="display:flex; align-items:center; gap:1rem;">
       <span id="refreshed"></span>
+      <a href="/calendar.html">📅 Calendar</a>
       <a href="/">&larr; Back to Drive</a>
     </div>
   </header>
@@ -423,7 +424,13 @@
       document.getElementById('refreshed').textContent = `updated ${new Date().toLocaleTimeString()}`;
     }
 
-    refreshAll();
+    refreshAll().then(() => {
+      // Deep link from the calendar page (?job=<id>) - opens straight into
+      // that job's inspect/edit panel instead of leaving it to be found
+      // by scrolling the table.
+      const deepLinkJobId = new URLSearchParams(location.search).get('job');
+      if (deepLinkJobId) openJobDetail(deepLinkJobId);
+    });
     setInterval(refreshAll, 5_000);
   </script>
 </body>

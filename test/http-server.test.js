@@ -89,6 +89,25 @@ test('GET /status.html serves the real-time compute-node/job/queue monitoring pa
   }
 });
 
+test('GET /calendar.html serves the monthly job-activity calendar', async () => {
+  const server = startServer({ port: 0, stateRoot: tempStateRoot() });
+  await listen(server);
+  const port = server.address().port;
+  const base = `http://127.0.0.1:${port}`;
+
+  try {
+    const res = await fetch(`${base}/calendar.html`);
+    assert.strictEqual(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    const body = await res.text();
+    assert.match(body, /<title>OWM Calendar<\/title>/);
+    // Read-only: must build its view from listJobs, never claim anything.
+    assert.ok(body.includes('listJobs'), 'calendar page must read real job data');
+  } finally {
+    server.close();
+  }
+});
+
 test('POST /tools/:name/invoke for an unknown tool returns 500 with an error body', async () => {
   const server = startServer({ port: 0, stateRoot: tempStateRoot() });
   await listen(server);
