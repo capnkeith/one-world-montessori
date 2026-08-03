@@ -205,21 +205,38 @@ out to be doesn't require re-architecting the transport.
   a real cross-machine rendezvous** — every locally-running instance
   currently only sees itself until a shared backend is wired in.
 - **`GoogleSheetsChannel`** (`src/core/GoogleSheetsChannel.js`) — the
-  designed-but-not-yet-live real backend: a shared Google Sheet with a
+  real backend, now live: a shared Google Sheet (project
+  `owm-drive-browser`, service account `owm-channel@...`) with a
   `presence` tab and a `messages` tab, polling-based, at-least-once via
   atomic per-row appends + a seq backfill (avoids collisions if two
-  peers send at once). This is genuinely the first thing that needs
-  real Google API access — **provisioning it (a Google Cloud project,
-  a service account scoped to only this one spreadsheet, the
-  spreadsheet itself) is intentionally not automated**, since it means
-  creating real, persistent infrastructure under the school's Google
-  org rather than just writing code — that step needs your explicit
-  go-ahead. Once a `spreadsheetId` and authenticated `sheetsClient`
-  exist, wiring it in is a one-line change in `src/context.js`
-  (swap `new InMemoryChannel()` for `new GoogleSheetsChannel({...})`).
-  If push-based delivery or higher message volume is ever needed,
-  swap in Firestore/Pub-Sub behind this same four-method interface
-  instead — nothing above it would need to change.
+  peers send at once). If push-based delivery or higher message volume
+  is ever needed, swap in Firestore/Pub-Sub behind this same
+  four-method interface instead — nothing above it would need to change.
+- **Wiring** (`src/context.js`): a node resolves its channel backend
+  once at startup — an explicitly passed `channel` (every test) always
+  wins, otherwise a real `GoogleSheetsChannel` if this node has the
+  service-account key + spreadsheetId configured, otherwise
+  `InMemoryChannel`. `channel`'s own `setup` action (mirroring
+  drive/dropbox) stores that key + spreadsheetId manually if needed.
+- **Automatic discovery** (`src/core/autoDiscoverChannel.js`): the real
+  service-account key is never bundled in the repo the way the Drive
+  OAuth client is (that's a safe-to-distribute installed-app
+  identifier; this is a real bearer credential) — instead it's
+  published once to Secret Manager (project `owm-drive-browser`,
+  secrets `channel_service_account_key` / `channel_spreadsheet_id`),
+  with `roles/secretmanager.secretAccessor` granted to
+  `domain:oneworldmontessori.org` so any node can read them once it has
+  *any* cached cloud-platform credential (`getCloudPlatformAuth`,
+  shared with Secret Manager/Firestore). `http-server.js` tries this at
+  every headless boot, falling back silently to `InMemoryChannel` if no
+  credential is cached yet and no interactive terminal is available to
+  get one (the common case for a brand-new machine's very first boot).
+  `bootstrap/authorize-channel.js` covers that gap: `first-run.ps1`
+  runs it once, in its own real interactive console session, right
+  after install — the one point in a machine's life where a human is
+  actually watching and a consent popup can be completed, unlike every
+  later boot. Never fatal to setup either way; presence is a
+  convenience, not core to OWM Drive working at all.
 - The local HTTP server announces this instance on startup and
   re-announces every 30s (server-process liveness, not browser-tab
   liveness) so it doesn't go stale in peers' `channel list` results.
@@ -288,43 +305,6 @@ node bootstrap/install.js <source> [branch]   # staged blue-green install/update
 
 ## Open items / next steps
 
-- **Provisioning the real `channel` backend** — a Google Cloud
-  project, a service account scoped to one spreadsheet, and the
-  spreadsheet itself. Needs your explicit go-ahead since it creates
-  real infrastructure under the school's org (see "Peer rendezvous /
-  messaging" above). This is the most concrete, well-scoped next step.
-  Runbook, ready to execute the moment you say go (needs `gcloud` —
-  not yet installed on this machine — authenticated as an account with
-  rights to create projects under the org, likely you):
-
-  ```
-  # 1. Auth (browser device-flow, same pattern as the GitHub CLI setup)
-  gcloud auth login
-
-  # 2. A dedicated project (keeps this fully isolated/revocable)
-  gcloud projects create owm-mcp-channel --name "OWM MCP Channel"
-  gcloud config set project owm-mcp-channel
-
-  # 3. Enable only what's needed
-  gcloud services enable sheets.googleapis.com drive.googleapis.com
-
-  # 4. A service account scoped to nothing but this one spreadsheet
-  gcloud iam service-accounts create owm-channel \
-    --display-name "OWM channel (presence + messages sheet only)"
-  gcloud iam service-accounts keys create owm-channel-key.json \
-    --iam-account owm-channel@owm-mcp-channel.iam.gserviceaccount.com
-
-  # 5. The spreadsheet: create it with the service account's own credentials
-  #    (owned by the service account, so no separate sharing step needed),
-  #    or create it as yourself and share Editor with the service
-  #    account's email — either way, add a `presence` tab and a
-  #    `messages` tab (see src/core/GoogleSheetsChannel.js for the exact
-  #    column layout it expects).
-
-  # 6. Store the key via SecretStore (never as a plaintext file in the repo),
-  #    point src/context.js at `new GoogleSheetsChannel({ spreadsheetId, sheetsClient })`
-  #    instead of `new InMemoryChannel()`, and add the `googleapis` package.
-  ```
 - **Real Google Workspace tools** — nothing here talks to Google yet
   otherwise. Apps are intentionally unscoped ("null app"); the first
   real tools to add are whatever the first actual app needs.

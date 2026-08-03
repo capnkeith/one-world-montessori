@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createContext } = require('../context');
-const { HTTP_DEFAULT_PORT } = require('../core/paths');
+const { HTTP_DEFAULT_PORT, SECRETS_DIR } = require('../core/paths');
+const { createSecretStore } = require('../core/SecretStore');
+const { autoDiscoverChannel } = require('../core/autoDiscoverChannel');
 
 const SAMPLE_APP_PATH = path.join(__dirname, '..', '..', 'sample-app', 'index.html');
 const CHECK_FOR_UPDATE_PATH = path.join(__dirname, '..', '..', 'bootstrap', 'check-for-update.js');
@@ -208,26 +210,34 @@ function startServer({
 }
 
 if (require.main === module) {
-  const port = Number(process.env.OWM_HTTP_PORT) || HTTP_DEFAULT_PORT;
+  (async () => {
+    const port = Number(process.env.OWM_HTTP_PORT) || HTTP_DEFAULT_PORT;
 
-  // Testing aid only: OWM_CHANNEL_BACKEND=file shares presence/messages
-  // across separate local processes via one JSON file on disk, so
-  // multiple locally-launched instances can genuinely discover each other
-  // without provisioning real Google Sheets credentials for
-  // GoogleSheetsChannel (the actual cross-machine production backend).
-  // Unset by default — a real launch still gets the normal private,
-  // per-process InMemoryChannel.
-  let channel;
-  if (process.env.OWM_CHANNEL_BACKEND === 'file') {
-    const { FileChannel } = require('../core/FileChannel');
-    channel = new FileChannel();
-    console.log(`Using shared file channel for local peer testing: ${channel.filePath}`);
-  }
+    // Testing aid only: OWM_CHANNEL_BACKEND=file shares presence/messages
+    // across separate local processes via one JSON file on disk, so
+    // multiple locally-launched instances can genuinely discover each
+    // other without provisioning real Google Sheets credentials for
+    // GoogleSheetsChannel (the actual cross-machine production backend).
+    // Unset by default — a real launch tries auto-discovery below first,
+    // falling back to the normal private, per-process InMemoryChannel.
+    let channel;
+    if (process.env.OWM_CHANNEL_BACKEND === 'file') {
+      const { FileChannel } = require('../core/FileChannel');
+      channel = new FileChannel();
+      console.log(`Using shared file channel for local peer testing: ${channel.filePath}`);
+    } else {
+      // Constructed standalone (not via createContext) purely so this can
+      // run before createContext does — startServer below builds its own
+      // secretStore pointed at this same on-disk store and picks up
+      // whatever autoDiscoverChannel just wrote there.
+      await autoDiscoverChannel({ secretStore: createSecretStore(SECRETS_DIR) });
+    }
 
-  const server = startServer({ port, channel });
-  server.on('listening', () => {
-    console.log(`OWM local HTTP server listening on http://127.0.0.1:${port}`);
-  });
+    const server = startServer({ port, channel });
+    server.on('listening', () => {
+      console.log(`OWM local HTTP server listening on http://127.0.0.1:${port}`);
+    });
+  })();
 }
 
 module.exports = { startServer };

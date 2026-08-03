@@ -233,7 +233,7 @@ Write-Host 'running in the background from now on.'
 Wait-KeyOrTimeout 10 'Starting install'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-$totalSteps = 5
+$totalSteps = 6
 
 try {
   # --- Step 1: make sure Node.js and Git are available -------------------
@@ -308,8 +308,23 @@ try {
   Remove-Item -Recurse -Force $downloadDir -ErrorAction SilentlyContinue
   Write-Done 'Installed.'
 
-  # --- Step 4: keep it running automatically ------------------------------
-  Write-Step 4 $totalSteps 'Setting up auto-start...'
+  # --- Step 4: authorize shared presence (best-effort, never fatal) ------
+  # This is the one point in this computer's life where a human is
+  # actually watching a real interactive console - the server itself
+  # always launches hidden/headless from here on, where a consent popup
+  # can never be completed. Doing it here means "see who else is online"
+  # works from the very first launch, with no separate manual step, on
+  # any machine already granted domain-wide access to the shared presence
+  # secrets (see SPEC.md's channel backend section). Never blocks setup:
+  # this is a nice-to-have, not core to OWM Drive working at all.
+  Write-Step 4 $totalSteps 'Setting up shared presence...'
+  try {
+    & node (Join-Path $CurrentLink 'bootstrap\authorize-channel.js')
+  } catch { }
+  Write-Done 'Done (or skipped harmlessly if unavailable on this network).'
+
+  # --- Step 5: keep it running automatically ------------------------------
+  Write-Step 5 $totalSteps 'Setting up auto-start...'
   $nodePath = (Get-Command node).Source
   # boot-launcher.js checks for an update (main -> current) before starting
   # the server, so every login picks up the latest version without anyone
@@ -400,8 +415,8 @@ try {
     Write-Host '      Could not add a Desktop/Start Menu shortcut - not a problem, OWM Drive is still installed and running.' -ForegroundColor Yellow
   }
 
-  # --- Step 5: launch --------------------------------------------------------
-  Write-Step 5 $totalSteps 'Launching OWM Drive...'
+  # --- Step 6: launch --------------------------------------------------------
+  Write-Step 6 $totalSteps 'Launching OWM Drive...'
   $ready = $false
   for ($i = 0; $i -lt 20; $i++) {
     Start-Sleep -Milliseconds 500
