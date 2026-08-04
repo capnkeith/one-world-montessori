@@ -18,6 +18,16 @@ const { PromptQueue } = require('../core/PromptQueue');
  * recently, so the app can grey out the bar rather than accept prompts
  * that might sit unanswered.
  *
+ * `wait` is the select()-like alternative to re-invoking `checkPending`
+ * on a timer: it blocks (no claim, just an in-process event/timeout race
+ * — see PromptQueue.waitForPending) until something's actually pending
+ * or a timeout elapses. A compute node runs this in a backgrounded shell
+ * loop instead of an AI turn re-checking every few minutes regardless of
+ * whether there's anything to do — the AI only spends a turn once `wait`
+ * actually returns `ready: true`. It also records the heartbeat itself
+ * (same as `checkPending`), so a watcher blocked here the whole time
+ * keeps `health` accurate for free even during a long idle stretch.
+ *
  * `nodeId` identifies this instance for the claim/lease model, same
  * convention as the `scheduler` tool.
  */
@@ -26,13 +36,14 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
 
   return new Tool({
     name: 'promptQueue',
-    version: '1.3.0',
+    version: '1.4.0',
     description:
-      'Queue for OWM Drive search prompts, answered by a Claude compute node instead of the paid API: submit a query, checkPending to claim and search, reportProgress for a short status update while working, recordAnswer (short text plus the real Drive entries found, or none), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
+      'Queue for OWM Drive search prompts, answered by a Claude compute node instead of the paid API: submit a query, wait to block (for free, no AI cost) until something is pending instead of re-polling on a timer, checkPending to claim and search, reportProgress for a short status update while working, recordAnswer (short text plus the real Drive entries found, or none), getPrompt to poll, listPrompts for a read-only view of everything (e.g. a monitoring dashboard), health to check if a provider is available.',
     mcpInputSchema: {
-      action: z.enum(['submit', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'listPrompts', 'health']).optional(),
+      action: z.enum(['submit', 'wait', 'checkPending', 'reportProgress', 'recordAnswer', 'getPrompt', 'listPrompts', 'health']).optional(),
       query: z.string().optional(),
       id: z.string().optional(),
+      timeoutMs: z.number().optional(),
       progress: z.string().optional(),
       answer: z
         .object({
@@ -61,6 +72,22 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
           // resolved to (see ToolSet._resolveUser) - carried along so
           // whichever compute node answers can see whose query this is.
           return promptQueue.submit({ query: params.query, user: ctx?.user ?? null });
+
+        // Blocks (no claim, no AI cost - it's just an EventEmitter/setTimeout
+        // race inside PromptQueue) until something's pending or timeoutMs
+        // elapses, whichever's first. Meant to be run in a backgrounded
+        // watcher loop (see WORKER.md) so a compute node gets woken only
+        // when there's real work, instead of re-invoking checkPending on a
+        // timer regardless of whether anything's there. Records a heartbeat
+        // check-in on the way in (not just checkPending), so a watcher
+        // blocked here the whole time keeps `health` accurate for free -
+        // a plain HTTP long-poll call costs nothing, unlike an AI turn
+        // whose only purpose would be refreshing the heartbeat.
+        case 'wait': {
+          heartbeat.recordCheckIn();
+          const timeoutMs = Math.min(Math.max(params.timeoutMs ?? 60_000, 1_000), 120_000);
+          return promptQueue.waitForPending({ timeoutMs });
+        }
 
         case 'checkPending': {
           heartbeat.recordCheckIn();
@@ -243,6 +270,34 @@ function createPromptQueueTool({ promptStore, heartbeat, nodeId = `node-${Math.r
       assert.deepStrictEqual(listedFirst.user, askingUser);
       const stillClaimable = await fakeTool.invoke({ action: 'checkPending' });
       assert.strictEqual(stillClaimable.result.pending.length, 0, 'listPrompts must never claim anything - both prompts are already answered regardless');
+
+      // wait: resolves immediately (no timeout wait needed) when something
+      // is already sitting there unanswered.
+      const waitTarget = await fakeTool.invoke({ action: 'submit', query: 'already there?' });
+      const waitImmediate = await fakeTool.invoke({ action: 'wait', timeoutMs: 50 });
+      assert.strictEqual(waitImmediate.result.ready, true);
+      assert.strictEqual(waitImmediate.result.pendingCount, 1);
+      await fakeTool.invoke({ action: 'recordAnswer', id: waitTarget.result.id, answer: { text: 'ok' } });
+
+      // wait: with a genuinely empty queue, times out rather than hanging -
+      // but still records a heartbeat, since a watcher genuinely was
+      // present the whole time, just with nothing to do.
+      let freshCheckIns = 0;
+      const freshHeartbeat = { recordCheckIn: () => { freshCheckIns += 1; }, isHealthy: () => freshCheckIns > 0 };
+      const freshTool = createPromptQueueTool({ promptStore: fakeStore, heartbeat: freshHeartbeat, nodeId: 'watcher-node' });
+      const waitTimedOut = await freshTool.invoke({ action: 'wait', timeoutMs: 50 });
+      assert.strictEqual(waitTimedOut.result.ready, false);
+      assert.strictEqual(waitTimedOut.result.pendingCount, 0);
+      assert.strictEqual(freshCheckIns, 1, 'wait must record a heartbeat even when nothing was pending, so a blocked watcher keeps health accurate for free');
+
+      // wait: resolves the moment a new prompt is submitted mid-wait,
+      // rather than only at the next poll - the whole point of this
+      // action existing (see PromptQueue.waitForPending's doc comment).
+      const waitPromise = fakeTool.invoke({ action: 'wait', timeoutMs: 5_000 });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await fakeTool.invoke({ action: 'submit', query: 'wake up!' });
+      const wokenEarly = await waitPromise;
+      assert.strictEqual(wokenEarly.result.ready, true);
 
       return { passed: true };
     },

@@ -306,16 +306,46 @@ has no effect on the answer itself — but it's the difference between the
 asker watching a frozen spinner for two minutes and seeing what's
 actually happening.
 
-### Keep this queue actually alive
+### Keep this queue actually alive — without polling on a timer
 
 Unlike the reply queue (fine to check once at the start of a session),
 this one directly gates whether the sample app's Ask Claude bar is even
 enabled — the app polls `promptQueue`'s `health` action, which reports
-whether *any* compute node has called `checkPending` within the last 5
-minutes. If you're the one keeping this queue serviced during a work
-session, check it periodically (every few minutes), not just once at
-the start — otherwise the bar greys itself out for anyone using the
-app, even though nothing is actually broken.
+whether *any* compute node has checked in within the last 5 minutes.
+
+Do **not** keep this alive by scheduling a wakeup purely to re-invoke
+`checkPending` every few minutes "just in case." That's an AI turn spent
+every single time, even when the answer is "nothing's there" — real,
+recurring cost for zero work done. Use the `wait` action instead: it
+blocks for free (plain code — an event/timeout race inside the queue,
+no AI involved) until something's actually pending, or a timeout
+elapses, and it records the heartbeat either way, so `health` stays
+accurate even through a long idle stretch with nothing to answer.
+
+Run it as a backgrounded watcher for the duration of your session,
+rather than as a step inside a normal turn (it can block for up to the
+`timeoutMs` you pass, default 60s, capped at 120s):
+
+```
+curl -s -X POST http://127.0.0.1:39390/tools/promptQueue/invoke \
+  -H "Content-Type: application/json" -d '{"action":"wait","timeoutMs":60000}'
+```
+
+Launch a loop around that in the background (e.g. the Bash tool's
+`run_in_background`), echoing something whenever a call returns
+`"ready":true`, and attach to it (e.g. the Monitor tool) so its output
+becomes a real notification back to you. Only then — once you're
+actually woken because there's something real to do — spend an AI turn
+calling `checkPending` (which claims it) and working it per the recipe
+above. If the loop instead returns `"ready":false` (timeout, nothing
+pending), that's not a notification worth waking a session over; just
+let the loop call `wait` again.
+
+This is the same shape as `checkReplies`'s own automatic poll (see "The
+email-reply-resolution queue" below) — cheap, automatic detection with
+zero AI cost while idle — except here it's genuinely push-like (wakes
+the instant something's submitted) rather than a fixed interval, since
+`wait` is a blocking call rather than a periodic snapshot.
 
 ## The support-ticket queue (`supportQueue`)
 

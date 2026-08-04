@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const EventEmitter = require('node:events');
 
 const DEFAULT_LEASE_MS = 10 * 60_000; // 10 minutes
 
@@ -40,6 +41,13 @@ const DEFAULT_LEASE_MS = 10 * 60_000; // 10 minutes
 class PromptQueue {
   constructor({ store }) {
     this.store = store;
+    // Lets waitForPending resolve the instant something's submitted,
+    // instead of a caller having to re-poll on a timer. Uncapped listener
+    // count: every concurrent long-poll waiter (one per compute node's
+    // background watcher) registers its own one-shot listener here, and
+    // that's an expected, unbounded-by-any-real-number amount of them.
+    this.events = new EventEmitter();
+    this.events.setMaxListeners(0);
   }
 
   submit({ query, user = null, now = new Date() }) {
@@ -59,6 +67,7 @@ class PromptQueue {
     const prompts = this.store.load();
     prompts.push(prompt);
     this.store.save(prompts);
+    this.events.emit('submitted');
     return prompt;
   }
 
@@ -68,6 +77,43 @@ class PromptQueue {
 
   listPrompts() {
     return this.store.load();
+  }
+
+  pendingCount() {
+    return this.listPrompts().filter((p) => !p.answeredAt).length;
+  }
+
+  /**
+   * The actual "select-like" primitive behind the queue: resolves the
+   * instant there's at least one unanswered prompt - either right away
+   * (something was already sitting there before this was even called) or
+   * as soon as `submit` fires next - or after timeoutMs with nothing,
+   * whichever comes first. Never claims anything itself (see
+   * claimPrompt/checkPending for that), so it's safe for a background
+   * watcher that's purely waiting, not about to actually answer.
+   *
+   * This is what turns "wake up every few minutes and check, even when
+   * there's nothing to do" (a real cost when that re-check is itself a
+   * Claude Code turn) into "block for free in plain code, only spend an
+   * AI turn once there's real work" - a compute node runs this in a
+   * backgrounded loop (see WORKER.md) instead of re-invoking checkPending
+   * on a timer.
+   */
+  waitForPending({ timeoutMs }) {
+    if (this.pendingCount() > 0) {
+      return Promise.resolve({ ready: true, pendingCount: this.pendingCount() });
+    }
+    return new Promise((resolve) => {
+      const onSubmitted = () => {
+        clearTimeout(timer);
+        resolve({ ready: true, pendingCount: this.pendingCount() });
+      };
+      const timer = setTimeout(() => {
+        this.events.off('submitted', onSubmitted);
+        resolve({ ready: false, pendingCount: 0 });
+      }, timeoutMs);
+      this.events.once('submitted', onSubmitted);
+    });
   }
 
   /**
