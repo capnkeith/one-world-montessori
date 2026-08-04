@@ -784,6 +784,22 @@
     const peerIconsEl = document.getElementById('peer-icons');
     const peerMenu = document.getElementById('peer-menu');
 
+    // Both the logo and peer icons live in the right-aligned header, so
+    // a right-click's clientX is often already near the window's right
+    // edge — positioning a popup with just `left: clientX` (no `right`
+    // set) pushed most of it off-screen. Measure the popup's real
+    // rendered size (must already be visible/populated) and clamp so it
+    // always stays fully within the viewport.
+    function positionPopup(el, e) {
+      el.style.display = 'block';
+      const margin = 8;
+      const rect = el.getBoundingClientRect();
+      const left = Math.max(margin, Math.min(e.clientX, window.innerWidth - rect.width - margin));
+      const top = Math.max(margin, Math.min(e.clientY, window.innerHeight - rect.height - margin));
+      el.style.left = `${left}px`;
+      el.style.top = `${top}px`;
+    }
+
     // Right-clicking the OWM logo shows global server info (this
     // install's own version/health), not the browser's native
     // "image properties" menu — reuses the same peer-menu popup, just
@@ -830,9 +846,7 @@
       statusAction.addEventListener('click', () => window.open(`${BASE_URL}/status.html`, '_blank'));
       peerMenu.appendChild(statusAction);
 
-      peerMenu.style.left = `${e.clientX}px`;
-      peerMenu.style.top = `${e.clientY}px`;
-      peerMenu.style.display = 'block';
+      positionPopup(peerMenu, e);
     }
     document.getElementById('app-logo').addEventListener('contextmenu', showServerMenu);
 
@@ -911,9 +925,7 @@
       });
       peerMenu.appendChild(updateAction);
 
-      peerMenu.style.left = `${e.clientX}px`;
-      peerMenu.style.top = `${e.clientY}px`;
-      peerMenu.style.display = 'block';
+      positionPopup(peerMenu, e);
     }
 
     // Real chat, backed by the `chat` MCP tool (src/tools/chat.js) rather
