@@ -942,7 +942,24 @@
     // with no window open yet.
     const chatWindowsEl = document.getElementById('chat-windows');
     const openChatWindows = new Map(); // conversationId -> { members, el, messagesEl }
-    let chatSinceSeq = 0;
+    const CHAT_SINCE_SEQ_KEY = 'owm-chat-since-seq';
+    // Persisted across reloads (regression, 2026-08-04: "we never had
+    // flowing text that was current"). Without this, a fresh page load
+    // always started from sinceSeq 0 - and since the real production
+    // channel backend (GoogleSheetsChannel) never prunes old messages (see
+    // its own header comment), that meant replaying literally every chat
+    // message ever exchanged, for every past conversation, as if it had
+    // just arrived, every single time the page loaded.
+    let chatSinceSeq = Number(localStorage.getItem(CHAT_SINCE_SEQ_KEY)) || 0;
+    // Guards against overlapping polls: setInterval fires on a fixed
+    // schedule regardless of whether the previous invoke() has resolved
+    // yet, and a slow/large channel read can genuinely take longer than
+    // the poll interval. Two in-flight polls racing on the shared
+    // chatSinceSeq variable can resolve out of order and regress it
+    // backward, causing duplicate or dropped messages.
+    let chatPollInFlight = false;
+    let chatPollFailures = 0;
+    let chatSyncWarningShown = false;
 
     function chatWindowTitle(members) {
       const others = members.filter((id) => id !== selfInstanceId);
@@ -964,6 +981,27 @@
       bubble.textContent = text;
       messagesEl.appendChild(bubble);
       messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    // A poll failing once is a non-event (network blip) - but pollChat's
+    // catch used to swallow failures completely silently, forever, with no
+    // way for anyone to tell "chat is quietly dead" apart from "nothing
+    // new was said." This surfaces it directly in whatever conversation(s)
+    // are actually open once failures cross a real threshold, and clears
+    // itself the moment a poll succeeds again.
+    function appendChatSystemNotice(messagesEl, text) {
+      const emptyEl = messagesEl.querySelector('.chat-window-empty');
+      if (emptyEl) emptyEl.remove();
+      const notice = document.createElement('div');
+      notice.className = 'chat-bubble-sender';
+      notice.style.textAlign = 'center';
+      notice.textContent = text;
+      messagesEl.appendChild(notice);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function broadcastChatSyncNotice(text) {
+      for (const win of openChatWindows.values()) appendChatSystemNotice(win.messagesEl, text);
     }
 
     function ensureChatWindow(conversationId, members) {
@@ -1013,11 +1051,20 @@
         input.value = '';
         const isGroup = members.length > 2;
         appendChatBubble(messagesEl, { mine: true, text, isGroup });
+        // Without a timeout, a hung request (no response, no error) left
+        // this bubble looking sent with no way to ever tell it wasn't -
+        // exactly "my messages never seemed to get sent" with nothing to
+        // explain why (regression, 2026-08-04).
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), CHAT_POLL_TIMEOUT_MS);
         try {
           const otherMembers = members.filter((id) => id !== selfInstanceId);
-          await invoke('chat', { action: 'send', conversationId, members: otherMembers, text });
+          await invoke('chat', { action: 'send', conversationId, members: otherMembers, text }, { signal: controller.signal });
         } catch (err) {
-          appendChatBubble(messagesEl, { mine: false, senderName: '(error)', text: `Failed to send: ${err.message}`, isGroup: true });
+          const message = err.name === 'AbortError' ? 'timed out waiting for the server' : err.message;
+          appendChatBubble(messagesEl, { mine: false, senderName: '(error)', text: `Failed to send: ${message}`, isGroup: true });
+        } finally {
+          clearTimeout(timeout);
         }
       }
       sendBtn.addEventListener('click', send);
@@ -1032,9 +1079,16 @@
       return win;
     }
 
+    const CHAT_POLL_TIMEOUT_MS = 15_000;
+    const CHAT_POLL_FAILURE_THRESHOLD = 3; // ~3 missed polls in a row before saying anything
+
     async function pollChat() {
+      if (chatPollInFlight) return; // previous poll hasn't resolved yet - never run two at once (see chatPollInFlight's note above)
+      chatPollInFlight = true;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), CHAT_POLL_TIMEOUT_MS);
       try {
-        const body = await invoke('chat', { action: 'poll', sinceSeq: chatSinceSeq });
+        const body = await invoke('chat', { action: 'poll', sinceSeq: chatSinceSeq }, { signal: controller.signal });
         for (const msg of body.result.messages) {
           const { conversationId, members, text } = msg.payload ?? {};
           if (!conversationId || !Array.isArray(members)) continue;
@@ -1047,8 +1101,27 @@
           });
         }
         chatSinceSeq = body.result.sinceSeq;
-      } catch {
-        // Chat is a nice-to-have — a poll failure shouldn't disrupt anything else.
+        localStorage.setItem(CHAT_SINCE_SEQ_KEY, String(chatSinceSeq));
+        if (chatSyncWarningShown) {
+          broadcastChatSyncNotice('(chat sync restored)');
+          chatSyncWarningShown = false;
+        }
+        chatPollFailures = 0;
+      } catch (err) {
+        // Chat is a nice-to-have — a single poll failure shouldn't disrupt
+        // anything else, but repeated failures used to be fully silent
+        // forever (regression, 2026-08-04: "the dialog seemed to get
+        // stuck", indistinguishable from a real, working, just-quiet
+        // conversation). Say something once it's genuinely not transient.
+        chatPollFailures += 1;
+        console.warn('chat poll failed:', err.message);
+        if (chatPollFailures === CHAT_POLL_FAILURE_THRESHOLD && !chatSyncWarningShown) {
+          broadcastChatSyncNotice('(chat sync is having trouble reaching the server - messages may be delayed)');
+          chatSyncWarningShown = true;
+        }
+      } finally {
+        clearTimeout(timeout);
+        chatPollInFlight = false;
       }
     }
 
@@ -1194,8 +1267,17 @@
     // icons never reflected anyone coming or going without a page reload.
     // Chat needs its own, faster poll to feel responsive while a
     // conversation is open.
+    pollChat(); // don't wait for the first 4s tick below to show anything already waiting
     setInterval(refreshPeers, 15000);
     setInterval(pollChat, 4000);
+    // Background browser tabs get their timers throttled (often to once a
+    // minute or less), so a conversation left open in an inactive tab can
+    // sit stale well past the 4s interval above. Poll immediately the
+    // moment the tab becomes visible again instead of waiting for the
+    // throttled timer to eventually catch up.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') pollChat();
+    });
   </script>
 </body>
 </html>

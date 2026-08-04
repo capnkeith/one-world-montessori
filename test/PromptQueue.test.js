@@ -158,3 +158,37 @@ test('getPrompt returns null for an id that does not exist, listPrompts returns 
   queue.submit({ query: 'two' });
   assert.strictEqual(queue.listPrompts().length, 2);
 });
+
+test('waitForPending resolves immediately when something is already unanswered', async () => {
+  const queue = new PromptQueue({ store: fakeStore() });
+  queue.submit({ query: 'hi' });
+  const result = await queue.waitForPending({ timeoutMs: 50 });
+  assert.strictEqual(result.ready, true);
+  assert.strictEqual(result.pendingCount, 1);
+});
+
+test('waitForPending times out rather than hanging when the queue is empty', async () => {
+  const queue = new PromptQueue({ store: fakeStore() });
+  const result = await queue.waitForPending({ timeoutMs: 50 });
+  assert.strictEqual(result.ready, false);
+  assert.strictEqual(result.pendingCount, 0);
+});
+
+test('waitForPending resolves the moment submit is called mid-wait, not just at the next poll', async () => {
+  const queue = new PromptQueue({ store: fakeStore() });
+  const waitPromise = queue.waitForPending({ timeoutMs: 5_000 });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  queue.submit({ query: 'wake up' });
+  const result = await waitPromise;
+  assert.strictEqual(result.ready, true);
+  assert.strictEqual(result.pendingCount, 1);
+});
+
+test('waitForPending does not count an already-answered prompt as pending', async () => {
+  const store = fakeStore();
+  const queue = new PromptQueue({ store });
+  const prompt = queue.submit({ query: 'hi' });
+  queue.recordAnswer({ id: prompt.id, answer: 'done' });
+  const result = await queue.waitForPending({ timeoutMs: 50 });
+  assert.strictEqual(result.ready, false);
+});
