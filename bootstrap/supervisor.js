@@ -17,6 +17,14 @@ const paths = require('../src/core/paths');
 
 const BOOT_LAUNCHER = path.join(__dirname, 'boot-launcher.js');
 const CRASH_LOOP_LOG = path.join(paths.STATE_ROOT, 'supervisor.log');
+// Regression (2026-08-05, real machine): `stdio: 'inherit'` sends the
+// child's real stdout/stderr - the one thing that would actually explain
+// *why* it exited, not just that it did - straight to this process's own
+// stdio. That's fine when launched from a visible console, but this runs
+// headless (hidden window / Task Scheduler with no console at all) on
+// every real install, so the one piece of information anyone would need
+// to diagnose a crash was going nowhere. Captured to a plain file instead.
+const CHILD_OUTPUT_LOG = path.join(paths.STATE_ROOT, 'child-output.log');
 
 const HEALTHY_RUN_MS = 60_000; // ran at least this long => treat as a normal exit, not a crash
 const BASE_BACKOFF_MS = 5_000;
@@ -67,8 +75,16 @@ async function runSupervisorLoop({ spawnChild, sleep, log, now }) {
 
 function realSpawnChild() {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BOOT_LAUNCHER], { stdio: 'inherit' });
-    child.on('exit', (code) => resolve(code ?? 0));
+    fs.mkdirSync(path.dirname(CHILD_OUTPUT_LOG), { recursive: true });
+    const logStream = fs.createWriteStream(CHILD_OUTPUT_LOG, { flags: 'a' });
+    logStream.write(`\n[${new Date().toISOString()}] --- starting boot-launcher.js ---\n`);
+    const child = spawn(process.execPath, [BOOT_LAUNCHER], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.pipe(logStream, { end: false });
+    child.stderr.pipe(logStream, { end: false });
+    child.on('exit', (code) => {
+      logStream.end();
+      resolve(code ?? 0);
+    });
   });
 }
 

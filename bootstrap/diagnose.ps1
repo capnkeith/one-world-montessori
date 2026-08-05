@@ -1,87 +1,108 @@
 #Requires -Version 5.1
-# OWM Drive - diagnostic report (read-only: changes nothing on this
-# computer, only reads and prints information).
+# OWM Drive - diagnostic report (read-only: never installs or changes
+# anything except possibly sending one email with this report).
 #
-# Usage: normally fetched and run via the landing page's "Run diagnostics"
-# link (https://capnkeith.github.io/one-world-montessori/), which copies
-# the command to your clipboard - downloads this file to disk first, then
-# runs it with -File, same reasoning as first-run.ps1's own comment on why
-# (piping straight into iex is a shape Windows Defender's heuristics can
-# silently kill mid-run - not something a diagnostic tool should risk
-# either).
+# One click, auto-delivered (Seth, 2026-08-05): collects the same
+# information as before, then tries emailing it directly through this
+# machine's own local OWM Drive server (the same `mail` tool every other
+# real email in this project already goes through) - no copy/paste
+# needed. Falls back to printing everything to the console, with the same
+# "copy this into a reply" instructions as before, if that delivery
+# attempt fails for any reason - this is never a dead end even on a
+# machine where the local server truly isn't reachable, which given this
+# script's whole purpose is a real possibility, not an edge case.
+#
+# Usage: normally fetched and run via the diagnostics page
+# (https://capnkeith.github.io/one-world-montessori/diagnose.html), which
+# copies the command to your clipboard - downloads this file to disk
+# first, then runs it with -File, same reasoning as first-run.ps1's own
+# comment on why (piping straight into iex is a shape Windows Defender's
+# heuristics can silently kill mid-run).
 #
 # IMPORTANT: docs/d is a copy of this exact file, hosted at a short path on
 # the GitHub Pages site, the same way docs/i mirrors first-run.ps1. Whenever
 # this file changes, copy it there too: Copy-Item bootstrap/diagnose.ps1 docs/d -Force
 
-Write-Host '=================================================='
-Write-Host '  OWM Drive - diagnostic report'
-Write-Host '=================================================='
-Write-Host ''
-Write-Host 'This only reads information - it does not change anything on'
-Write-Host 'this computer. Copy everything from the line below down to the'
-Write-Host 'bottom, and paste it into a reply email to Claude.'
-Write-Host '---------------------------------------------------'
+$lines = New-Object System.Collections.Generic.List[string]
+function Add-Line($text = '') {
+  $lines.Add($text)
+  Write-Host $text
+}
 
-Write-Host ''
-Write-Host '[Windows]'
+Add-Line '=================================================='
+Add-Line '  OWM Drive - diagnostic report'
+Add-Line '=================================================='
+
+Add-Line ''
+Add-Line '[Windows]'
 try {
   $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
-  Write-Host "Version: $($os.Caption) (build $($os.BuildNumber))"
+  Add-Line "Version: $($os.Caption) (build $($os.BuildNumber))"
 } catch {
-  Write-Host "Could not read Windows version: $($_.Exception.Message)"
+  Add-Line "Could not read Windows version: $($_.Exception.Message)"
 }
 
-Write-Host ''
-Write-Host '[Windows Security]'
+Add-Line ''
+Add-Line '[Windows Security]'
 try {
   $mp = Get-MpComputerStatus -ErrorAction Stop
-  Write-Host "Smart App Control: $($mp.SmartAppControlState)"
-  Write-Host "Real-time protection enabled: $($mp.RealTimeProtectionEnabled)"
-  Write-Host "Antivirus enabled: $($mp.AntivirusEnabled)"
+  Add-Line "Smart App Control: $($mp.SmartAppControlState)"
+  Add-Line "Real-time protection enabled: $($mp.RealTimeProtectionEnabled)"
+  Add-Line "Antivirus enabled: $($mp.AntivirusEnabled)"
 } catch {
-  Write-Host "Could not read Windows Security status: $($_.Exception.Message)"
+  Add-Line "Could not read Windows Security status: $($_.Exception.Message)"
 }
 
-Write-Host ''
-Write-Host '[Recent Windows Security detections/blocks (last 10)]'
+Add-Line ''
+Add-Line '[Recent Windows Security detections/blocks (last 10)]'
 try {
   $threats = Get-MpThreatDetection -ErrorAction Stop | Sort-Object InitialDetectionTime -Descending | Select-Object -First 10
   if ($threats) {
     foreach ($t in $threats) {
-      Write-Host "$($t.InitialDetectionTime) - $($t.ThreatName) - resolved: $($t.ActionSuccess)"
+      Add-Line "$($t.InitialDetectionTime) - $($t.ThreatName) - resolved: $($t.ActionSuccess)"
     }
   } else {
-    Write-Host 'None found.'
+    Add-Line 'None found.'
   }
 } catch {
-  Write-Host "Could not read detection history: $($_.Exception.Message)"
+  Add-Line "Could not read detection history: $($_.Exception.Message)"
 }
 
-Write-Host ''
-Write-Host '[OWM Drive install state]'
+Add-Line ''
+Add-Line '[OWM Drive install state]'
 $stateRoot = Join-Path $env:USERPROFILE '.owm-mcp'
 if (Test-Path $stateRoot) {
-  Write-Host "Found: $stateRoot"
+  Add-Line "Found: $stateRoot"
   $current = Join-Path $stateRoot 'current'
   if (Test-Path $current) {
     try {
       $commit = & git -C $current log -1 --oneline 2>&1
-      Write-Host "Current install commit: $commit"
+      Add-Line "Current install commit: $commit"
     } catch {
-      Write-Host "Could not read current install's version."
+      Add-Line "Could not read current install's version."
     }
   } else {
-    Write-Host 'No completed install found yet ("current" folder is missing).'
+    Add-Line 'No completed install found yet ("current" folder is missing).'
   }
 
   $supervisorLog = Join-Path $stateRoot 'supervisor.log'
   if (Test-Path $supervisorLog) {
-    Write-Host ''
-    Write-Host '--- last 30 lines of supervisor.log ---'
-    Get-Content $supervisorLog -Tail 30
+    Add-Line ''
+    Add-Line '--- last 30 lines of supervisor.log ---'
+    Get-Content $supervisorLog -Tail 30 | ForEach-Object { Add-Line $_ }
   } else {
-    Write-Host 'No supervisor.log found yet.'
+    Add-Line 'No supervisor.log found yet.'
+  }
+
+  # The one thing that actually explains *why* the server exited, not
+  # just that it did - see supervisor.js's own comment on why this exists
+  # (the child's real stdout/stderr used to go nowhere in a headless
+  # launch). Won't exist yet on an install from before 2026-08-05.
+  $childOutputLog = Join-Path $stateRoot 'child-output.log'
+  if (Test-Path $childOutputLog) {
+    Add-Line ''
+    Add-Line '--- last 60 lines of child-output.log ---'
+    Get-Content $childOutputLog -Tail 60 | ForEach-Object { Add-Line $_ }
   }
 
   $installLogDir = Join-Path $stateRoot 'install-logs'
@@ -89,25 +110,56 @@ if (Test-Path $stateRoot) {
     $latestInstallLog = Get-ChildItem $installLogDir -Filter 'install.log' -ErrorAction SilentlyContinue |
       Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if ($latestInstallLog) {
-      Write-Host ''
-      Write-Host "--- last 40 lines of $($latestInstallLog.Name) (from $($latestInstallLog.LastWriteTime)) ---"
-      Get-Content $latestInstallLog.FullName -Tail 40
+      Add-Line ''
+      Add-Line "--- last 40 lines of $($latestInstallLog.Name) (from $($latestInstallLog.LastWriteTime)) ---"
+      Get-Content $latestInstallLog.FullName -Tail 40 | ForEach-Object { Add-Line $_ }
     }
   }
 } else {
-  Write-Host 'Nothing installed yet at all - no .owm-mcp folder exists.'
+  Add-Line 'Nothing installed yet at all - no .owm-mcp folder exists.'
+}
+
+Add-Line ''
+Add-Line '[Node / Git]'
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($node) { Add-Line "node: $(& node --version)" } else { Add-Line 'node: not found' }
+$git = Get-Command git -ErrorAction SilentlyContinue
+if ($git) { Add-Line "git: $(& git --version)" } else { Add-Line 'git: not found' }
+
+Add-Line ''
+Add-Line '---------------------------------------------------'
+$report = $lines -join "`r`n"
+
+Write-Host ''
+Write-Host 'Trying to send this report automatically...' -ForegroundColor Cyan
+$sent = $false
+try {
+  $requestBody = @{
+    action  = 'send'
+    to      = 'seth@oneworldmontessori.org'
+    subject = "OWM Drive diagnostic report - $env:COMPUTERNAME ($env:USERNAME)"
+    text    = $report
+  } | ConvertTo-Json
+  $null = Invoke-RestMethod -Uri 'http://127.0.0.1:39390/tools/mail/invoke' -Method Post -ContentType 'application/json' -Body $requestBody -TimeoutSec 10 -ErrorAction Stop
+  $sent = $true
+} catch {
+  # Deliberately silent here - the console fallback below is what matters
+  # if this didn't work, not the specific reason it didn't.
 }
 
 Write-Host ''
-Write-Host '[Node / Git]'
-$node = Get-Command node -ErrorAction SilentlyContinue
-if ($node) { Write-Host "node: $(& node --version)" } else { Write-Host 'node: not found' }
-$git = Get-Command git -ErrorAction SilentlyContinue
-if ($git) { Write-Host "git: $(& git --version)" } else { Write-Host 'git: not found' }
-
+if ($sent) {
+  Write-Host '==================================================' -ForegroundColor Green
+  Write-Host '  Done! This report was emailed automatically.' -ForegroundColor Green
+  Write-Host '==================================================' -ForegroundColor Green
+  Write-Host 'Nothing else for you to do - you can close this window.'
+} else {
+  Write-Host '==================================================' -ForegroundColor Yellow
+  Write-Host '  Could not send this automatically' -ForegroundColor Yellow
+  Write-Host '==================================================' -ForegroundColor Yellow
+  Write-Host 'Please copy everything from the top of this window (the ====='
+  Write-Host 'line near the top) down to here, and paste it into a reply email.'
+}
 Write-Host ''
-Write-Host '---------------------------------------------------'
-Write-Host 'That is everything - copy from the line above down to here.'
-Write-Host ''
-Write-Host 'This window will stay open so you have time to scroll up and copy it all.'
+Write-Host 'This window will stay open so you can copy the report above if needed.'
 try { [Console]::ReadKey($true) | Out-Null } catch { while ($true) { Start-Sleep -Seconds 3600 } }

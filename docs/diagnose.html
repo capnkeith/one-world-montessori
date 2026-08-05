@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OWM Drive Diagnostics</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; color: #1a1a1a; background: #f5f7fb; }
+  .wrap { min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
+  .card { background: #fff; border-radius: 14px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); padding: 2.5rem; max-width: 480px; width: 100%; text-align: center; }
+  h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+  p { color: #555; line-height: 1.5; }
+  .btn { display: inline-block; margin-top: 1.5rem; padding: 0.75rem 1.75rem; background: #2a5cdb; color: #fff; text-decoration: none; border: none; border-radius: 8px; font-weight: 600; font-size: 1.05rem; cursor: pointer; font-family: inherit; }
+  .btn:hover { background: #1e46ad; }
+  .btn.copied { background: #1e7b34; }
+  .steps { text-align: left; margin-top: 1.25rem; padding: 1rem 1.25rem; background: #f5f7fb; border-radius: 10px; font-size: 0.9rem; }
+  .steps ol { margin: 0.4rem 0 0; padding-left: 1.2rem; }
+  .steps li { margin-bottom: 0.5rem; }
+  .hint { font-size: 0.85rem; color: #888; margin: 0.5rem 0 0; }
+  code { background: #eef1f7; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>OWM Drive Diagnostics</h1>
+      <p>This only reads information from your computer — it doesn't install or change anything.</p>
+      <button id="copy-btn" class="btn" type="button">Copy diagnostic command</button>
+      <div class="steps">
+        <strong>A PowerShell window should open on its own.</strong> If it does, just press <code>Ctrl+V</code> then <strong>Enter</strong>.
+        <p class="hint">If no window opens automatically after a few seconds, do this instead:</p>
+        <ol>
+          <li>Press the <strong>Windows key</strong>, type <code>PowerShell</code>, and press Enter.</li>
+          <li>Right-click inside the window that opens (or press <code>Ctrl+V</code>) to paste.</li>
+          <li>Press <strong>Enter</strong> to run it.</li>
+        </ol>
+        <p class="hint">When it finishes, scroll up, copy everything it printed, and paste it into a reply email.</p>
+      </div>
+    </div>
+  </div>
+  <script>
+    // Same command as the one previously reachable only via a link buried
+    // in the main install page's steps (Seth, 2026-08-05: "put up a link
+    // all by itself... something simple"). One page, one button, one job.
+    const DIAGNOSE_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/d -OutFile $env:TEMP\\owm-d.ps1; & $env:TEMP\\owm-d.ps1';
+    const copyBtn = document.getElementById('copy-btn');
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(DIAGNOSE_COMMAND);
+      } catch (err) {
+        window.prompt('Copy this command:', DIAGNOSE_COMMAND);
+      }
+      copyBtn.textContent = 'Copied!';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        copyBtn.textContent = 'Copy diagnostic command';
+        copyBtn.classList.remove('copied');
+      }, 2000);
+      // Best-effort only, same as the install page - silently does nothing
+      // if Windows Terminal's URI handler isn't registered.
+      try { window.location.href = 'wt://'; } catch (err) { }
+    });
+  </script>
+</body>
+</html>

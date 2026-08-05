@@ -42,7 +42,7 @@
           <li>Press <strong>Enter</strong> to run it.</li>
         </ol>
         <p class="hint" style="margin-top:0.5rem;">You may see a security prompt partway through - that's expected, see the on-screen instructions. Setup takes about a minute.</p>
-        <p class="hint" style="margin-top:0.75rem;">If install keeps failing (e.g. PowerShell closes on its own partway through): <a href="#" id="diagnose-btn">click here to copy a diagnostic command</a> instead, run it the same way, then copy everything it prints into a reply email.</p>
+        <p class="hint" style="margin-top:0.75rem;">If install keeps failing (e.g. PowerShell closes on its own partway through), see <a href="diagnose.html">the diagnostics page</a> instead.</p>
       </div>
       <div class="status" id="status"></div>
     </div>
@@ -69,34 +69,10 @@
     // trip the same heuristic - same fix already proven there, now applied
     // to the primary install command everyone actually uses.
     const INSTALL_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/i -OutFile $env:TEMP\\owm-i.ps1; & $env:TEMP\\owm-i.ps1';
-    // Read-only (see bootstrap/diagnose.ps1's own header) - for when install
-    // itself won't finish (e.g. PowerShell closing partway through, no
-    // error shown) and there's nothing else to go on yet. Copied via the
-    // clipboard API rather than ever being pasted from an email as raw
-    // text - regression (2026-08-05): a long command pasted from an email
-    // body got hard-wrapped onto two lines by the mail client, silently
-    // breaking it, which looked exactly like yet another install failure
-    // but was actually just how the command reached the person at all.
-    const DIAGNOSE_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/d -OutFile $env:TEMP\\owm-d.ps1; & $env:TEMP\\owm-d.ps1';
     const messageEl = document.getElementById('message');
     const statusEl = document.getElementById('status');
     const installBtn = document.getElementById('install-btn');
     const installSteps = document.getElementById('install-steps');
-    const diagnoseBtn = document.getElementById('diagnose-btn');
-
-    diagnoseBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      try {
-        await navigator.clipboard.writeText(DIAGNOSE_COMMAND);
-      } catch (err) {
-        window.prompt('Copy this command:', DIAGNOSE_COMMAND);
-      }
-      const original = diagnoseBtn.textContent;
-      diagnoseBtn.textContent = 'Copied!';
-      setTimeout(() => {
-        diagnoseBtn.textContent = original;
-      }, 2000);
-    });
 
     installBtn.addEventListener('click', async () => {
       try {
