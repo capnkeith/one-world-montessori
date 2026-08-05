@@ -96,6 +96,13 @@
       }
     }
 
+    function showInstallUi(message) {
+      messageEl.textContent = message;
+      statusEl.textContent = '';
+      installBtn.classList.remove('hidden');
+      installSteps.classList.remove('hidden');
+    }
+
     async function attempt(n) {
       statusEl.textContent = n > 1 ? `Still looking... (${n})` : '';
       const alive = await probe();
@@ -106,16 +113,26 @@
         return;
       }
       if (n >= 3) {
-        messageEl.textContent = "OWM Drive isn't installed on this computer yet.";
-        statusEl.textContent = '';
-        installBtn.classList.remove('hidden');
-        installSteps.classList.remove('hidden');
+        showInstallUi("OWM Drive isn't installed on this computer yet.");
         return;
       }
       setTimeout(() => attempt(n + 1), 800);
     }
 
-    attempt(1);
+    // Regression (2026-08-05): a machine that's already running OWM Drive
+    // - just on an old version - always got auto-redirected straight back
+    // into the (stale) app by the probe below, with no way to ever reach
+    // the install/update steps to fix that. There was no way to reinstall
+    // via this page short of first stopping the server, which isn't
+    // something to ask a non-technical user to do. ?install=1 skips the
+    // probe entirely and goes straight to the same install command every
+    // fresh install uses - re-running it is always safe (see the steps'
+    // own copy), so this doubles as the update path too.
+    if (new URLSearchParams(location.search).get('install')) {
+      showInstallUi('Reinstall / update OWM Drive:');
+    } else {
+      attempt(1);
+    }
   </script>
 </body>
 </html>
