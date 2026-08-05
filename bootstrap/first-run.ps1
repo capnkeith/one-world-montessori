@@ -7,8 +7,12 @@
 # stays open with a clear final message (success or failure) instead of
 # just vanishing.
 #
-# Usage (normally invoked by OWM-Drive-Install.bat, not run directly):
-#   powershell -ExecutionPolicy Bypass -File first-run.ps1
+# Usage: normally fetched and run via the install command on the landing
+# page (https://capnkeith.github.io/one-world-montessori/, "Copy install
+# command") - downloads this file to disk first, then runs it with -File,
+# rather than piping straight into iex (see docs/index.html's own comment
+# on INSTALL_COMMAND for why: piping straight into iex is a shape Windows
+# Defender's heuristics can silently kill mid-run).
 #
 # IMPORTANT: docs/i is a copy of this exact file, hosted at a short path on
 # the GitHub Pages site so the landing page's install command can be much

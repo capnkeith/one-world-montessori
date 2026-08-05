@@ -48,13 +48,26 @@
   </div>
   <script>
     const APP_URL = 'http://127.0.0.1:39390/';
-    // Shortest reliable form: hosted at a 1-letter path on this same Pages
-    // site (not raw.githubusercontent.com, which is ~40 chars longer) - kept
-    // in sync with bootstrap/first-run.ps1, see that file's own comment.
+    // Hosted at a 1-letter path on this same Pages site (not
+    // raw.githubusercontent.com, which is ~40 chars longer) - kept in sync
+    // with bootstrap/first-run.ps1, see that file's own comment.
     // -useb (-UseBasicParsing) is kept despite the length: dropping it risks
     // Invoke-WebRequest trying to use the IE engine on a machine that has
     // never run IE's first-launch wizard, a classic fresh-Windows failure.
-    const INSTALL_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/i | iex';
+    //
+    // Regression (2026-08-05): a plain `iwr | iex` one-liner - piping the
+    // download straight into iex, never touching disk - is exactly the
+    // shape Windows Defender's cloud/ML heuristics can flag as
+    // Trojan:Win32/Commando.A!ml and silently kill mid-run, with zero
+    // error - it just looks like the PowerShell window closed on its own
+    // partway through install. Confirmed live for the RunOnce-continuation
+    // case (see first-run.ps1's Smart App Control section) and directly
+    // matches what happened trying to walk Rebecca through this exact
+    // command. Downloading to a file first, then running that file, is a
+    // fundamentally different, more benign-looking sequence that doesn't
+    // trip the same heuristic - same fix already proven there, now applied
+    // to the primary install command everyone actually uses.
+    const INSTALL_COMMAND = 'iwr -useb https://capnkeith.github.io/one-world-montessori/i -OutFile $env:TEMP\\owm-i.ps1; & $env:TEMP\\owm-i.ps1';
     const messageEl = document.getElementById('message');
     const statusEl = document.getElementById('status');
     const installBtn = document.getElementById('install-btn');
