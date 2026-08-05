@@ -101,8 +101,8 @@ if (Test-Path $stateRoot) {
   $childOutputLog = Join-Path $stateRoot 'child-output.log'
   if (Test-Path $childOutputLog) {
     Add-Line ''
-    Add-Line '--- last 60 lines of child-output.log ---'
-    Get-Content $childOutputLog -Tail 60 | ForEach-Object { Add-Line $_ }
+    Add-Line '--- last 400 lines of child-output.log ---'
+    Get-Content $childOutputLog -Tail 400 | ForEach-Object { Add-Line $_ }
   }
 
   $installLogDir = Join-Path $stateRoot 'install-logs'
