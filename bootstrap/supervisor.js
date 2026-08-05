@@ -81,9 +81,21 @@ function realSpawnChild() {
     const child = spawn(process.execPath, [BOOT_LAUNCHER], { stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.pipe(logStream, { end: false });
     child.stderr.pipe(logStream, { end: false });
+    // Regression (2026-08-05, real machine): 'exit' fires the moment the
+    // OS reports the process gone, which is NOT guaranteed to be after its
+    // stdout/stderr pipes have finished draining - a stack trace printed
+    // right as the process dies (exactly the case we most need to catch)
+    // can still be in flight and get lost. 'close' fires only after the
+    // child's stdio streams have themselves ended, so nothing gets cut off.
+    // Confirmed live: this exact gap is why a captured log showed a clean
+    // "server listening" line and then nothing at all for a process that
+    // still exited with code 1 moments later.
+    let exitCode = 0;
     child.on('exit', (code) => {
-      logStream.end();
-      resolve(code ?? 0);
+      exitCode = code ?? 0;
+    });
+    child.on('close', () => {
+      logStream.end(() => resolve(exitCode));
     });
   });
 }
