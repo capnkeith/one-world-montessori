@@ -28,9 +28,23 @@ const MCP_INSTRUCTIONS =
   'background job processing (email-reply resolution, the Ask-Claude prompt queue, and any future ' +
   "queues), plus which real users are expected to participate and how. Follow it.";
 
-async function main() {
-  const { toolSet } = createContext();
-
+/**
+ * Builds the McpServer instance (all tools registered) plus a standalone
+ * `announce` function, without touching any real transport/process
+ * lifecycle — kept separate from `main()` below so a test can exercise a
+ * real MCP handshake (via the SDK's own Client + InMemoryTransport) and
+ * verify presence actually gets announced, the same way test/mcp-server.test.js
+ * already verifies the `instructions` field with a real handshake.
+ *
+ * Presence used to only ever come from http-server.js's own announce
+ * loop, meaning a node connected purely over MCP (no local HTTP/sample
+ * app running - e.g. Johanna's session via `claude mcp add`) never
+ * showed up as an online peer at all, even though it's a genuinely live
+ * compute node. `announce` here lets `main()` call it immediately and
+ * keep re-announcing on an interval for as long as the connection stays
+ * open, mirroring http-server.js's own pattern.
+ */
+function buildMcpServer({ toolSet }) {
   const server = new McpServer({ name: 'owm-mcp', version: SERVER_VERSION }, { instructions: MCP_INSTRUCTIONS });
 
   for (const { name, description } of toolSet.list()) {
@@ -51,7 +65,30 @@ async function main() {
     );
   }
 
+  function announce() {
+    return toolSet.invoke('channel', { action: 'announce' }).catch((err) => {
+      console.error('presence announce failed:', err.message);
+    });
+  }
+
+  return { server, announce };
+}
+
+async function main() {
+  const { toolSet } = createContext();
+  const { server, announce } = buildMcpServer({ toolSet });
+
+  announce();
+  // Longer than http-server.js's 30s on purpose: this can now run once
+  // per open Claude Code session (potentially many at once), and a live
+  // incident (2026-08-05) already showed the shared Sheets-backed
+  // presence system hitting its per-minute quota under concurrent load -
+  // more simultaneous announcers should mean less frequent announcing
+  // each, not the same cadence multiplied.
+  const announceInterval = setInterval(announce, 60_000);
+
   const transport = new StdioServerTransport();
+  transport.onclose = () => clearInterval(announceInterval);
   await server.connect(transport);
 }
 
@@ -62,4 +99,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { MCP_INSTRUCTIONS };
+module.exports = { MCP_INSTRUCTIONS, buildMcpServer };
