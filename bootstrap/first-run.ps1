@@ -195,33 +195,17 @@ function Test-AppResponding {
   }
 }
 
-# Already installed? Don't run the whole setup flow again just because
-# this script got run a second time (e.g. a stale "not installed yet"
-# check on the landing page) - get the existing install running and open
-# it. Only falls through to a full (re)install if it's genuinely missing
-# or can't be started.
-if (Test-Path $CurrentLink) {
-  Write-Host ''
-  Write-Host 'OWM Drive is already installed on this computer.'
-  if (-not (Test-AppResponding)) {
-    Write-Host 'Starting it...'
-    Refresh-Path
-    $node = Get-Command node -ErrorAction SilentlyContinue
-    if ($node) {
-      $supervisorScript = Join-Path $CurrentLink 'bootstrap\supervisor.js'
-      Start-Process -FilePath $node.Source -ArgumentList "`"$supervisorScript`"" -WindowStyle Hidden
-      for ($i = 0; $i -lt 10 -and -not (Test-AppResponding); $i++) { Start-Sleep -Milliseconds 500 }
-    }
-  }
-  if (Test-AppResponding) {
-    Write-Host 'Opening it now...'
-    Start-Process $AppUrl
-    Wait-KeyOrTimeout 5 'Closing this window'
-    exit 0
-  }
-  Write-Host 'It is installed but not responding - running setup again to fix it.' -ForegroundColor Yellow
-}
-
+# Regression (2026-08-05): this used to short-circuit straight to "open the
+# already-running app, exit 0" the moment ANYTHING was already installed
+# and responding - looked exactly like success (a browser tab opening to
+# OWM Drive) while silently skipping every actual install/update step.
+# Confirmed live: this is exactly why re-running the installer to update a
+# stale install did nothing, with no error and no visible sign anything
+# was skipped. Whoever is running this script chose to run it - that's
+# reason enough to actually do the install/update, every time, rather than
+# guessing whether it's "necessary." bootstrap/install.js's own blue-green
+# verify-before-promote step (below) is where a genuinely no-op reinstall
+# should be made cheap, not here.
 if (Test-SmartAppControlBlocking) {
   Resolve-SmartAppControlBlock
   # Resolve-SmartAppControlBlock always exits (abort, failure, or reboot) - never returns.
