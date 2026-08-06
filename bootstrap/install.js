@@ -21,7 +21,7 @@ const paths = require('../src/core/paths');
  */
 
 function log(msg) {
-  console.log(`[owm-install] ${msg}`);
+  console.log(`[${new Date().toISOString()}] [owm-install] ${msg}`);
 }
 
 function isGitUrl(source) {

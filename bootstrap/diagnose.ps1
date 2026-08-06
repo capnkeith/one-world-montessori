@@ -59,7 +59,11 @@ try {
   $threats = Get-MpThreatDetection -ErrorAction Stop | Sort-Object InitialDetectionTime -Descending | Select-Object -First 10
   if ($threats) {
     foreach ($t in $threats) {
-      Add-Line "$($t.InitialDetectionTime) - $($t.ThreatName) - resolved: $($t.ActionSuccess)"
+      # ThreatName does not exist on Get-MpThreatDetection's own output
+      # (real bug, confirmed live: silently comes back blank) - the real
+      # name needs a Get-MpThreat lookup by ThreatID.
+      $threatName = try { (Get-MpThreat -ThreatID $t.ThreatID -ErrorAction Stop).ThreatName } catch { "ThreatID $($t.ThreatID)" }
+      Add-Line "$($t.InitialDetectionTime) - $threatName - resolved: $($t.ActionSuccess)"
     }
   } else {
     Add-Line 'None found.'

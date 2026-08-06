@@ -20,7 +20,7 @@ const REPO_URL = 'https://github.com/capnkeith/one-world-montessori.git';
 const BRANCH = 'main';
 
 function log(msg) {
-  console.log(`[owm-update-check] ${msg}`);
+  console.log(`[${new Date().toISOString()}] [owm-update-check] ${msg}`);
 }
 
 function readInstalledCommit() {

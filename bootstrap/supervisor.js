@@ -49,7 +49,17 @@ function decideNextAction({ ranMs, failCount }) {
   return { action: 'restart', delayMs, failCount: nextFailCount };
 }
 
-async function runSupervisorLoop({ spawnChild, sleep, log, now }) {
+/**
+ * `onGiveUp`/`onHealthyRun` are how this stays "dead simple, automated,
+ * rock solid" for someone who can't be asked to run a diagnostic script
+ * by hand (Seth, 2026-08-05) - see bootstrap/diagnostics.js for what each
+ * actually does. Both default to a no-op so existing tests (and anything
+ * that doesn't care about diagnostics) are unaffected; the real ones are
+ * wired in below, outside of tests. Failures in either are caught and
+ * logged, never allowed to break the actual supervise/restart loop -
+ * failing to report a failure must never itself become a second failure.
+ */
+async function runSupervisorLoop({ spawnChild, sleep, log, now, onGiveUp = async () => {}, onHealthyRun = async () => {} }) {
   let failCount = 0;
   for (;;) {
     const startedAt = now();
@@ -65,10 +75,27 @@ async function runSupervisorLoop({ spawnChild, sleep, log, now }) {
         `${failCount} fast failures in a row (child never stayed up ${HEALTHY_RUN_MS}ms) — ` +
           'giving up, not retrying. Fix the underlying issue and restart the supervisor manually.'
       );
+      try {
+        await onGiveUp({ failCount, ranMs });
+      } catch (err) {
+        log(`onGiveUp itself failed: ${err.message}`);
+      }
       return { gaveUp: true, failCount };
     }
 
-    if (decision.delayMs > 0) log(`backing off ${decision.delayMs}ms before restart (fast failure #${failCount})`);
+    if (decision.delayMs === 0) {
+      // A genuinely healthy run, not just backing off before another
+      // attempt - the moment things are known to be working is exactly
+      // when a previously undelivered report (see diagnostics.js) has
+      // its best chance of actually getting out.
+      try {
+        await onHealthyRun({ ranMs });
+      } catch (err) {
+        log(`onHealthyRun itself failed: ${err.message}`);
+      }
+    } else {
+      log(`backing off ${decision.delayMs}ms before restart (fast failure #${failCount})`);
+    }
     await sleep(decision.delayMs);
   }
 }
@@ -107,12 +134,25 @@ function realLog(msg) {
   console.log(msg);
 }
 
+function realOnGiveUp({ failCount }) {
+  const { collectDiagnosticReport, deliverDiagnosticReport } = require('./diagnostics');
+  const report = collectDiagnosticReport();
+  return deliverDiagnosticReport(report, { reason: `gave up after ${failCount} fast failures`, log: realLog });
+}
+
+function realOnHealthyRun() {
+  const { retryPendingReport } = require('./diagnostics');
+  return retryPendingReport({ log: realLog });
+}
+
 if (require.main === module) {
   runSupervisorLoop({
     spawnChild: realSpawnChild,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: realLog,
     now: () => Date.now(),
+    onGiveUp: realOnGiveUp,
+    onHealthyRun: realOnHealthyRun,
   });
 }
 
